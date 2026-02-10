@@ -1,0 +1,692 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+    <title>看板</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+
+    <main class="container" id="app" v-cloak>
+
+      <!-- 已移除通用“特性”展示，仅保留看板主体 -->
+
+      <!-- 移除 API 示例与 hello 调用 -->
+
+      <section id="kanban" class="api">
+        <!-- 移动端改为折叠列头点击切换当前显示队列 -->
+        <!-- 悬浮菜单：新建任务 / 切换主题 -->
+        <div class="fab-menu" :class="{open: fabOpen}">
+          <button class="fab" type="button" @click="toggleFab" aria-label="展开操作">
+            <svg v-if="!fabOpen" class="icon" viewBox="0 0 24 24" preserveAspectRatio="xMidYMid meet">
+              <path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"></path>
+            </svg>
+            <svg v-else class="icon" viewBox="0 0 24 24" preserveAspectRatio="xMidYMid meet">
+              <path d="M5 5l14 14M19 5l-14 14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"></path>
+            </svg>
+          </button>
+          <button class="fab-item" type="button" title="新建任务" aria-label="新建任务" @click="openModal">
+            <svg class="icon" viewBox="0 0 24 24" preserveAspectRatio="xMidYMid meet">
+              <path d="M4 19h16M7 4h6l7 7v8H7zM13 4v6h6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"></path>
+            </svg>
+          </button>
+          <button class="fab-item" type="button" title="切换主题" aria-label="切换主题" @click="openTheme">
+            <svg class="icon" viewBox="0 0 24 24" preserveAspectRatio="xMidYMid meet">
+              <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2"></circle>
+              <path d="M12 3a9 9 0 0 0 0 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"></path>
+            </svg>
+          </button>
+          <button class="fab-item" type="button" title="归档任务" aria-label="归档任务" @click="openArchived">
+            <svg class="icon" viewBox="0 0 24 24" preserveAspectRatio="xMidYMid meet">
+              <path d="M3 7h18M6 7l2-3h8l2 3M7 11h10v8H7z" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path>
+              <path d="M10 15l2 2 4-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path>
+            </svg>
+          </button>
+        </div>
+        <!-- 模态窗口：新建任务 -->
+        <div class="modal" v-cloak v-if="showModal" @click.self="closeModal">
+          <div class="modal-content">
+            <h3 style="margin:0 0 12px;">新建任务</h3>
+            <form @submit.prevent="submitTask" style="display:grid; gap:10px;">
+              <input v-model="taskForm.title" placeholder="任务标题" required class="input">
+              <textarea v-model="taskForm.description" placeholder="任务描述（可选）" rows="3" class="input"></textarea>
+              <div>
+                <label style="display:block; margin-bottom:6px;">标签</label>
+                <div class="chips">
+                  <span class="chip" v-for="(tag,idx) in selectedTags" :key="tag">
+                    {{ tag }}
+                    <button type="button" class="chip-remove" @click="removeTag(idx)">×</button>
+                  </span>
+                </div>
+                <input v-model="tagQuery" @keydown.enter.prevent="addTagFromQuery" placeholder="搜索或新建标签" class="input">
+                <div class="suggestions" v-if="filteredTags.length">
+                  <button type="button" class="suggestion" v-for="t in filteredTags" :key="t" @click="addTag(t)">{{ t }}</button>
+                </div>
+              </div>
+              <div style="display:flex; gap:8px; justify-content:flex-end; margin-top:8px;">
+                <button type="button" class="btn btn-secondary" @click="closeModal">取消</button>
+                <button type="submit" class="btn" :disabled="taskCreating">{{ taskCreating ? "创建中..." : "创建" }}</button>
+              </div>
+            </form>
+          </div>
+        </div>
+        <!-- 模态窗口：切换主题 -->
+        <div class="modal" v-cloak v-if="showTheme" @click.self="closeTheme">
+          <div class="modal-content theme-modal">
+            <h3 style="margin:0 0 12px;">切换主题</h3>
+            <div class="themes-grid">
+              <button class="theme-card" v-for="t in themes" :key="t.key" @click="applyTheme(t.key)">
+                <div class="swatch" :style="{ background: t.preview.bg }"></div>
+                <div class="swatch-row">
+                  <span class="swatch" :style="{ background: t.preview.plan }"></span>
+                  <span class="swatch" :style="{ background: t.preview.do }"></span>
+                  <span class="swatch" :style="{ background: t.preview.hold }"></span>
+                  <span class="swatch" :style="{ background: t.preview.done }"></span>
+                </div>
+                <div class="theme-name">{{ t.name }}</div>
+              </button>
+            </div>
+          </div>
+        </div>
+        <!-- 模态窗口：确认任务操作（归档或彻底删除） -->
+        <div class="modal" v-cloak v-if="showConfirm" @click.self="closeConfirm">
+          <div class="modal-content">
+            <h3 style="margin:0 0 12px;">确认任务操作</h3>
+            <p style="margin:0 12px 12px; color: var(--muted);">请选择对该任务进行归档或彻底删除。归档可在归档列表查看，删除不可恢复。</p>
+            <div class="confirm-actions">
+              <label class="confirm-option">
+                <input type="radio" name="confirm_action" value="archive" v-model="confirmAction">
+                <span>归档</span>
+              </label>
+              <label class="confirm-option">
+                <input type="radio" name="confirm_action" value="delete" v-model="confirmAction">
+                <span>彻底删除</span>
+              </label>
+            </div>
+            <div style="display:flex; gap:8px; justify-content:flex-end; margin-top: 12px;">
+              <button type="button" class="btn btn-secondary" @click="closeConfirm">取消</button>
+              <button type="button" class="btn" @click="confirmArchive">{{ confirmAction === 'delete' ? '彻底删除' : '归档' }}</button>
+            </div>
+          </div>
+        </div>
+        <!-- 模态窗口：归档任务列表 -->
+        <div class="modal" v-cloak v-if="showArchived" @click.self="closeArchived">
+          <div class="modal-content archive-modal">
+            <h3 style="margin:0 0 12px;">归档任务</h3>
+            <div style="display:flex; gap:8px; margin-bottom:12px;">
+              <input v-model="archivedSearch" placeholder="搜索任务..." class="input" @input="debouncedLoadArchived">
+            </div>
+            <div class="arch-list">
+              <div class="arch-item" v-for="t in archivedTasks" :key="t.id" :data-id="t.id">
+                <div style="flex:1;">
+                  <div class="arch-title">{{ t.title }}</div>
+                  <div class="arch-desc" v-if="t.description">{{ t.description }}</div>
+                  <div class="arch-tags">
+                    <span class="tag" v-for="tag in t.tags" :key="tag">{{ tag }}</span>
+                  </div>
+                </div>
+                <div class="arch-actions">
+                  <button type="button" class="icon-btn" title="恢复" aria-label="恢复" @click="restoreTask(t.id)">
+                    <svg class="icon" viewBox="0 0 24 24" preserveAspectRatio="xMidYMid meet">
+                      <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"></path>
+                      <path d="M3 3v5h5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"></path>
+                    </svg>
+                  </button>
+                  <button type="button" class="icon-btn" title="删除" aria-label="删除" @click="deleteTask(t.id)">
+                    <svg class="icon" viewBox="0 0 24 24" preserveAspectRatio="xMidYMid meet">
+                      <path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"></path>
+                    </svg>
+                  </button>
+                </div>
+              </div>
+              <div class="empty-state" v-if="archivedTasks.length === 0 && !archivedLoading">没有找到归档任务</div>
+              <div class="loading-state" v-if="archivedLoading"><div class="spinner"></div></div>
+            </div>
+            <div class="arch-pager">
+              <div class="arch-info">第 {{ archivedPage }} 页</div>
+              <div style="display:flex; gap:8px;">
+                <button type="button" class="btn btn-small" :disabled="archivedTasks.length === 0 || archivedPage <= 1" @click="changeArchivedPage(archivedPage - 1)">上一页</button>
+                <button type="button" class="btn btn-small" :disabled="archivedTasks.length === 0 || !archivedHasMore" @click="changeArchivedPage(archivedPage + 1)">下一页</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="board" ref="boardRef">
+          <div class="column" data-status="规划中" :class="{ expanded: !isDesktop && activeStatus==='规划中', collapsed: !isDesktop && activeStatus!=='规划中' }">
+            <div class="column-header" @click="setActive('规划中')">规划中</div>
+            <div class="column-list" id="col-plan" data-status="规划中" :class="{collapsed: !isDesktop && (dragging || activeStatus!=='规划中')}" @click="handleListClick($event, '规划中')">
+              <div class="card" v-for="t in tasks.filter(x => x.status==='规划中' && !x.archived)" :key="t.id" :data-id="t.id">
+                <div class="card-toolbar">
+                  <span class="drag-handle" v-if="!isDesktop" title="拖动" aria-label="拖动">
+                    <svg class="icon" viewBox="0 0 24 24" preserveAspectRatio="xMidYMid meet">
+                      <path d="M15 6c-2.2 0-4 1.8-4 4 0 .6.1 1.1.3 1.6L7 16l-2 2 3 3 2-2 4.4-4.4c.5.2 1 .3 1.6.3 2.2 0 4-1.8 4-4l3-3-3-3-3 3z" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path>
+                    </svg>
+                  </span>
+                  <button type="button" class="icon-btn" title="归档" aria-label="归档" @click.stop="openConfirmArchive(t.id)">
+                    <svg class="icon" viewBox="0 0 24 24" preserveAspectRatio="xMidYMid meet">
+                      <path d="M3 7h18M6 7l2-3h8l2 3M7 11h10v8H7z" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path>
+                      <path d="M12 12v5M9.5 14.5L12 17l2.5-2.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path>
+                    </svg>
+                  </button>
+                </div>
+                <div class="card-title">{{ t.title }}</div>
+                <div class="card-desc" v-if="t.description">{{ t.description }}</div>
+                <div class="card-tags">
+                  <span class="tag" v-for="tag in t.tags" :key="tag">{{ tag }}</span>
+                </div>
+              </div>
+              <div class="drop-hint" v-if="!isDesktop && (dragging || activeStatus!=='规划中')" aria-label="投放到此列">
+                <svg class="hint-icon" viewBox="0 0 24 24" preserveAspectRatio="none">
+                  <path d="M7 6l5 5 5-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path>
+                  <path d="M7 11l5 5 5-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path>
+                </svg>
+              </div>
+            </div>
+          </div>
+          <div class="column" data-status="进行中" :class="{ expanded: !isDesktop && activeStatus==='进行中', collapsed: !isDesktop && activeStatus!=='进行中' }">
+            <div class="column-header" @click="setActive('进行中')">进行中</div>
+            <div class="column-list" id="col-do" data-status="进行中" :class="{collapsed: !isDesktop && (dragging || activeStatus!=='进行中')}" @click="handleListClick($event, '进行中')">
+              <div class="card" v-for="t in tasks.filter(x => x.status==='进行中' && !x.archived)" :key="t.id" :data-id="t.id">
+                <div class="card-toolbar">
+                  <span class="drag-handle" v-if="!isDesktop" title="拖动" aria-label="拖动">
+                    <svg class="icon" viewBox="0 0 24 24" preserveAspectRatio="xMidYMid meet">
+                      <path d="M15 6c-2.2 0-4 1.8-4 4 0 .6.1 1.1.3 1.6L7 16l-2 2 3 3 2-2 4.4-4.4c.5.2 1 .3 1.6.3 2.2 0 4-1.8 4-4l3-3-3-3-3 3z" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path>
+                    </svg>
+                  </span>
+                  <button type="button" class="icon-btn" title="归档" aria-label="归档" @click.stop="openConfirmArchive(t.id)">
+                    <svg class="icon" viewBox="0 0 24 24" preserveAspectRatio="xMidYMid meet">
+                      <path d="M3 7h18M6 7l2-3h8l2 3M7 11h10v8H7z" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path>
+                      <path d="M12 12v5M9.5 14.5L12 17l2.5-2.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path>
+                    </svg>
+                  </button>
+                </div>
+                <div class="card-title">{{ t.title }}</div>
+                <div class="card-desc" v-if="t.description">{{ t.description }}</div>
+                <div class="card-tags">
+                  <span class="tag" v-for="tag in t.tags" :key="tag">{{ tag }}</span>
+                </div>
+              </div>
+              <div class="drop-hint" v-if="!isDesktop && (dragging || activeStatus!=='进行中')" aria-label="投放到此列">
+                <svg class="hint-icon" viewBox="0 0 24 24" preserveAspectRatio="none">
+                  <path d="M7 6l5 5 5-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path>
+                  <path d="M7 11l5 5 5-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path>
+                </svg>
+              </div>
+            </div>
+          </div>
+          <div class="column" data-status="搁置中" :class="{ expanded: !isDesktop && activeStatus==='搁置中', collapsed: !isDesktop && activeStatus!=='搁置中' }">
+            <div class="column-header" @click="setActive('搁置中')">搁置中</div>
+            <div class="column-list" id="col-hold" data-status="搁置中" :class="{collapsed: !isDesktop && (dragging || activeStatus!=='搁置中')}" @click="handleListClick($event, '搁置中')">
+              <div class="card" v-for="t in tasks.filter(x => x.status==='搁置中' && !x.archived)" :key="t.id" :data-id="t.id">
+                <div class="card-toolbar">
+                  <span class="drag-handle" v-if="!isDesktop" title="拖动" aria-label="拖动">
+                    <svg class="icon" viewBox="0 0 24 24" preserveAspectRatio="xMidYMid meet">
+                      <path d="M15 6c-2.2 0-4 1.8-4 4 0 .6.1 1.1.3 1.6L7 16l-2 2 3 3 2-2 4.4-4.4c.5.2 1 .3 1.6.3 2.2 0 4-1.8 4-4l3-3-3-3-3 3z" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path>
+                    </svg>
+                  </span>
+                  <button type="button" class="icon-btn" title="归档" aria-label="归档" @click.stop="openConfirmArchive(t.id)">
+                    <svg class="icon" viewBox="0 0 24 24" preserveAspectRatio="xMidYMid meet">
+                      <path d="M3 7h18M6 7l2-3h8l2 3M7 11h10v8H7z" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path>
+                      <path d="M12 12v5M9.5 14.5L12 17l2.5-2.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path>
+                    </svg>
+                  </button>
+                </div>
+                <div class="card-title">{{ t.title }}</div>
+                <div class="card-desc" v-if="t.description">{{ t.description }}</div>
+                <div class="card-tags">
+                  <span class="tag" v-for="tag in t.tags" :key="tag">{{ tag }}</span>
+                </div>
+              </div>
+              <div class="drop-hint" v-if="!isDesktop && (dragging || activeStatus!=='搁置中')" aria-label="投放到此列">
+                <svg class="hint-icon" viewBox="0 0 24 24" preserveAspectRatio="none">
+                  <path d="M7 6l5 5 5-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path>
+                  <path d="M7 11l5 5 5-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path>
+                </svg>
+              </div>
+            </div>
+          </div>
+          <div class="column" data-status="已完成" :class="{ expanded: !isDesktop && activeStatus==='已完成', collapsed: !isDesktop && activeStatus!=='已完成' }">
+            <div class="column-header" @click="setActive('已完成')">已完成</div>
+            <div class="column-list" id="col-done" data-status="已完成" :class="{collapsed: !isDesktop && (dragging || activeStatus!=='已完成')}" @click="handleListClick($event, '已完成')">
+              <div class="card" v-for="t in tasks.filter(x => x.status==='已完成' && !x.archived)" :key="t.id" :data-id="t.id">
+                <div class="card-toolbar">
+                  <span class="drag-handle" v-if="!isDesktop" title="拖动" aria-label="拖动">
+                    <svg class="icon" viewBox="0 0 24 24" preserveAspectRatio="xMidYMid meet">
+                      <path d="M15 6c-2.2 0-4 1.8-4 4 0 .6.1 1.1.3 1.6L7 16l-2 2 3 3 2-2 4.4-4.4c.5.2 1 .3 1.6.3 2.2 0 4-1.8 4-4l3-3-3-3-3 3z" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path>
+                    </svg>
+                  </span>
+                  <button type="button" class="icon-btn" title="归档" aria-label="归档" @click.stop="openConfirmArchive(t.id)">
+                    <svg class="icon" viewBox="0 0 24 24" preserveAspectRatio="xMidYMid meet">
+                      <path d="M3 7h18M6 7l2-3h8l2 3M7 11h10v8H7z" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path>
+                      <path d="M12 12v5M9.5 14.5L12 17l2.5-2.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path>
+                    </svg>
+                  </button>
+                </div>
+                <div class="card-title">{{ t.title }}</div>
+                <div class="card-desc" v-if="t.description">{{ t.description }}</div>
+                <div class="card-tags">
+                  <span class="tag" v-for="tag in t.tags" :key="tag">{{ tag }}</span>
+                </div>
+              </div>
+              <div class="drop-hint" v-if="!isDesktop && (dragging || activeStatus!=='已完成')" aria-label="投放到此列">
+                <svg class="hint-icon" viewBox="0 0 24 24" preserveAspectRatio="none">
+                  <path d="M7 6l5 5 5-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path>
+                  <path d="M7 11l5 5 5-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path>
+                </svg>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 移除笔记模块 -->
+    </main>
+
+    <!-- 移除与看板无关的页脚 -->
+
+    <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
+    <script type="module">
+      import { createApp, ref, onMounted, onBeforeUnmount, computed } from "https://cdn.jsdelivr.net/npm/vue@3.4.21/dist/vue.esm-browser.prod.js";
+
+      // 移除不必要的 ApiClient 与示例注释
+
+      // createVueApp 创建并挂载 Vue 应用，仅管理任务相关交互
+      function createVueApp() {
+        return createApp({
+          setup() {
+            const tasks = ref([]);
+            const taskForm = ref({ title: "", description: "", tags: "" });
+            const taskCreating = ref(false);
+            const selectedTags = ref([]);
+            const tagQuery = ref("");
+            const allTags = ref([]);
+            const showModal = ref(false);
+            const isDesktop = ref(window.matchMedia("(min-width: 768px)").matches);
+            const boardRef = ref(null);
+            const activeStatus = ref("规划中");
+            /**
+             * setActive 切换移动端当前展开的状态列
+             */
+            const setActive = (s) => { activeStatus.value = s; };
+            /**
+             * dragging 表示是否处于拖拽中（仅移动端使用）
+             */
+            const dragging = ref(false);
+            /**
+             * lastActiveBeforeDrag 记录拖拽开始前的展开列状态
+             */
+            const lastActiveBeforeDrag = ref("规划中");
+            let activeHintEl = null;
+            let activeTargetCol = null;
+            /**
+             * showConfirm 控制归档确认弹窗显示
+             */
+            const showConfirm = ref(false);
+            /**
+             * pendingArchiveId 保存待归档的任务ID
+             */
+            const pendingArchiveId = ref(null);
+            // FAB 菜单与主题
+            const fabOpen = ref(false);
+            const showTheme = ref(false);
+            const themes = [
+              { key: "night", name: "星夜", preview: { bg: "linear-gradient(180deg,#080c17 0%,#0b0f1a 100%)", plan: "#1a2b4f", do: "#153a3a", hold: "#3a2a15", done: "#16321c" } },
+              { key: "dawn", name: "清晨", preview: { bg: "linear-gradient(180deg,#eef5ff 0%,#dde8f9 100%)", plan: "#dbe7ff", do: "#dff7f1", hold: "#fff1db", done: "#e6f7e9" } },
+              { key: "sunset", name: "暮霞", preview: { bg: "linear-gradient(180deg,#1b0f14 0%,#2a1a20 100%)", plan: "#2a2233", do: "#1f2a28", hold: "#38241a", done: "#1f2a1f" } },
+              { key: "forest", name: "森林", preview: { bg: "linear-gradient(180deg,#0b1510 0%,#0e1a12 100%)", plan: "#12222d", do: "#0f2621", hold: "#2a1e12", done: "#123019" } },
+            ];
+            const toggleFab = () => { fabOpen.value = !fabOpen.value; };
+            const openTheme = () => { fabOpen.value = false; showTheme.value = true; };
+            const closeTheme = () => { showTheme.value = false; };
+            const applyTheme = (key) => {
+              document.body.setAttribute("data-theme", key);
+              try { localStorage.setItem("kanban_theme", key); } catch {}
+              closeTheme();
+            };
+            /**
+             * preventDoubleTapZoom 在移动端禁用双击放大
+             */
+            const preventDoubleTapZoom = () => {
+              let lastTouch = 0;
+              document.addEventListener("touchend", (e) => {
+                const now = Date.now();
+                if (now - lastTouch <= 300) {
+                  e.preventDefault();
+                }
+                lastTouch = now;
+              }, { passive: false });
+            };
+            const openModal = async () => {
+              fabOpen.value = false;
+              showModal.value = true;
+              await loadTags();
+            };
+            const showArchived = ref(false);
+            const archivedTasks = ref([]);
+            const archivedLoading = ref(false);
+            const archivedPage = ref(1);
+            const archivedPageSize = ref(10);
+            const archivedHasMore = ref(false);
+            const archivedSearch = ref("");
+            let archivedTimer = null;
+            const debouncedLoadArchived = () => {
+              if (archivedTimer) clearTimeout(archivedTimer);
+              archivedTimer = setTimeout(() => {
+                archivedPage.value = 1;
+                loadArchivedTasks();
+              }, 300);
+            };
+            const loadArchivedTasks = async () => {
+              archivedLoading.value = true;
+              try {
+                const params = new URLSearchParams();
+                params.append("archived", "1");
+                params.append("page", archivedPage.value);
+                params.append("page_size", archivedPageSize.value);
+                if (archivedSearch.value) params.append("q", archivedSearch.value);
+                const data = await fetch(`/api/tasks?${params.toString()}&_=${Date.now()}`, { headers: { "Accept": "application/json" } }).then(r => r.json());
+                archivedTasks.value = data.items || [];
+                archivedHasMore.value = !!data.has_more;
+                archivedPage.value = data.page || archivedPage.value;
+                archivedPageSize.value = data.page_size || archivedPageSize.value;
+              } catch (err) {
+                alert("加载归档任务失败: " + err.message);
+              } finally {
+                archivedLoading.value = false;
+              }
+            };
+            const changeArchivedPage = (page) => {
+              archivedPage.value = page;
+              loadArchivedTasks();
+            };
+            const openArchived = async () => {
+              fabOpen.value = false;
+              showArchived.value = true;
+              await loadArchivedTasks();
+            };
+            const closeArchived = () => {
+              showArchived.value = false;
+              archivedSearch.value = "";
+            };
+            const restoreTask = async (id) => {
+              try {
+                await fetch(`/api/tasks/${id}/restore`, { method: "POST", headers: { "Accept": "application/json" } });
+                await loadArchivedTasks();
+                await loadTasks();
+              } catch (err) {
+                alert("恢复失败: " + err.message);
+              }
+            };
+            const handleListClick = (evt, status) => {
+              if (isDesktop.value) return;
+              if (dragging.value) return;
+              const target = evt.target;
+              if (target.closest("button")) return;
+              if (target.closest(".drag-handle")) return;
+              if (activeStatus.value === status) return;
+              setActive(status);
+            };
+
+            // 移除未使用的时间格式化函数
+
+            // 初始化任务列表与拖拽
+            const loadTasks = async () => {
+              try {
+                const data = await fetch(`/api/tasks?_=${Date.now()}`, { headers: { "Accept": "application/json" } }).then(r => r.json());
+                tasks.value = data.items || [];
+              } catch (err) {
+                console.error(err);
+              }
+            };
+            const loadTags = async (q = "") => {
+              try {
+                const url = q ? `/api/tags?q=${encodeURIComponent(q)}` : "/api/tags";
+                const data = await fetch(url, { headers: { "Accept": "application/json" } }).then(r => r.json());
+                allTags.value = data.items || [];
+              } catch (err) {
+                console.error(err);
+              }
+            };
+            const filteredTags = computed(() => {
+              const q = tagQuery.value.trim().toLowerCase();
+              const pool = allTags.value.filter(t => !selectedTags.value.includes(t));
+              if (!q) return pool.slice(0, 10);
+              return pool.filter(t => t.toLowerCase().includes(q)).slice(0, 10);
+            });
+            const addTag = (t) => {
+              if (!selectedTags.value.includes(t)) selectedTags.value.push(t);
+              tagQuery.value = "";
+            };
+            const addTagFromQuery = () => {
+              const t = tagQuery.value.trim();
+              if (!t) return;
+              addTag(t);
+            };
+            const removeTag = (idx) => {
+              selectedTags.value.splice(idx, 1);
+            };
+            const closeModal = () => {
+              showModal.value = false;
+              tagQuery.value = "";
+              selectedTags.value = [];
+              taskForm.value = { title: "", description: "", tags: "" };
+            };
+            const submitTask = async () => {
+              if (!taskForm.value.title) return;
+              taskCreating.value = true;
+              try {
+                await fetch("/api/tasks", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json", "Accept": "application/json" },
+                  body: JSON.stringify({ title: taskForm.value.title, description: taskForm.value.description, tags: selectedTags.value }),
+                });
+                closeModal();
+                await loadTasks();
+              } catch (err) {
+                alert("创建失败: " + err.message);
+              } finally {
+                taskCreating.value = false;
+              }
+            };
+            const updateTaskStatus = async (id, status) => {
+              try {
+                await fetch(`/api/tasks/${id}/status`, {
+                  method: "PATCH",
+                  headers: { "Content-Type": "application/json", "Accept": "application/json" },
+                  body: JSON.stringify({ status }),
+                });
+                await loadTasks();
+              } catch (err) {
+                alert("更新失败: " + err.message);
+              }
+            };
+            /**
+             * archiveTask 执行归档操作并刷新任务列表
+             */
+            const archiveTask = async (id) => {
+              try {
+                await fetch(`/api/tasks/${id}/archive`, { method: "POST", headers: { "Accept": "application/json" } });
+                await loadTasks();
+              } catch (err) {
+                alert("归档失败: " + err.message);
+              }
+            };
+            /**
+             * deleteTask 彻底删除任务（不可恢复）
+             */
+            const deleteTask = async (id) => {
+              try {
+                await fetch(`/api/tasks/${id}`, { method: "DELETE", headers: { "Accept": "application/json" } });
+                await loadTasks();
+                if (showArchived.value) {
+                  await loadArchivedTasks();
+                }
+              } catch (err) {
+                alert("删除失败: " + err.message);
+              }
+            };
+            /**
+             * openConfirmArchive 打开归档确认弹窗
+             */
+            const openConfirmArchive = (id) => {
+              pendingArchiveId.value = id;
+              showConfirm.value = true;
+            };
+            /**
+             * closeConfirm 关闭归档确认弹窗
+             */
+            const closeConfirm = () => {
+              showConfirm.value = false;
+              pendingArchiveId.value = null;
+            };
+            /**
+             * confirmAction 当前选择的操作（archive | delete）
+             */
+            const confirmAction = ref("archive");
+            /**
+             * confirmArchive 确认归档并关闭弹窗
+             */
+            const confirmArchive = async () => {
+              if (!pendingArchiveId.value) { closeConfirm(); return; }
+              try {
+                if (confirmAction.value === "delete") {
+                  await deleteTask(pendingArchiveId.value);
+                } else {
+                  await archiveTask(pendingArchiveId.value);
+                }
+              } catch (err) {
+                // 错误已在各自函数中提示，这里兜底关闭弹窗
+              }
+              closeConfirm();
+            };
+            let sortables = [];
+            const destroySortables = () => {
+              sortables.forEach(s => { try { s.destroy(); } catch {} });
+              sortables = [];
+            };
+            const initSortable = () => {
+              const makeList = (id) => {
+                const el = document.getElementById(id);
+                const opts = {
+                  group: { name: "kanban", pull: true, put: true },
+                  animation: 150,
+                  draggable: ".card",
+                  ghostClass: "drag-ghost",
+                  dragClass: "dragging",
+                  fallbackOnBody: true,
+                  delayOnTouchOnly: true,
+                  delay: 120,
+                  forceFallback: true,
+                  scroll: true,
+                  bubbleScroll: true,
+                  emptyInsertThreshold: 10,
+                  filter: "button, .btn, .icon-btn, input, textarea, select",
+                  preventOnFilter: false,
+                  onStart: () => {
+                    document.querySelector(".board")?.classList.add("no-snap");
+                    if (!isDesktop.value) {
+                      lastActiveBeforeDrag.value = activeStatus.value;
+                      dragging.value = true;
+                      activeHintEl = null;
+                    }
+                  },
+                  onMove: (evt) => {
+                    if (isDesktop.value) return true;
+                    const toList = evt.to;
+                    const col = toList.closest(".column");
+                    if (activeTargetCol && activeTargetCol !== col) {
+                      activeTargetCol.classList.remove("drop-target");
+                      activeTargetCol = null;
+                    }
+                    if (col) {
+                      col.classList.add("drop-target");
+                      activeTargetCol = col;
+                    }
+                    return true;
+                  },
+                  onAdd: (evt) => {
+                    const item = evt.item;
+                    const taskId = item.getAttribute("data-id");
+                    const status = evt.to.getAttribute("data-status");
+                    updateTaskStatus(taskId, status);
+                  },
+                  onEnd: () => {
+                    document.querySelector(".board")?.classList.remove("no-snap");
+                    if (!isDesktop.value) {
+                      dragging.value = false;
+                      activeStatus.value = lastActiveBeforeDrag.value;
+                      if (activeHintEl) {
+                        activeHintEl.querySelector(".drop-hint")?.classList.remove("hint-active");
+                        activeHintEl = null;
+                      }
+                      if (activeTargetCol) {
+                        activeTargetCol.classList.remove("drop-target");
+                        activeTargetCol = null;
+                      }
+                    }
+                  },
+                };
+                if (!isDesktop.value) opts.handle = ".drag-handle";
+                const s = new Sortable(el, opts);
+                sortables.push(s);
+                return s;
+              };
+              makeList("col-plan");
+              makeList("col-do");
+              makeList("col-hold");
+              makeList("col-done");
+            };
+            const handleResize = () => {
+              isDesktop.value = window.matchMedia("(min-width: 768px)").matches;
+              destroySortables();
+              initSortable();
+            };
+            window.addEventListener("resize", handleResize);
+            onMounted(async () => {
+              await loadTasks();
+              await loadTags();
+              initSortable();
+              const onDocClick = (e) => {
+                if (!fabOpen.value) return;
+                const target = e.target;
+                if (target.closest(".fab-menu")) return;
+                fabOpen.value = false;
+              };
+              document.addEventListener("click", onDocClick);
+              onBeforeUnmount(() => {
+                document.removeEventListener("click", onDocClick);
+              });
+              // 应用已保存主题
+              try {
+                const saved = localStorage.getItem("kanban_theme");
+                if (saved) {
+                  document.body.setAttribute("data-theme", saved);
+                } else {
+                  document.body.setAttribute("data-theme", "night");
+                  try { localStorage.setItem("kanban_theme", "night"); } catch {}
+                }
+              } catch {}
+              // 移动端禁用双击缩放
+              if (!isDesktop.value) {
+                preventDoubleTapZoom();
+              }
+            });
+            return {
+              tasks, taskForm, taskCreating, archiveTask,
+              showModal, openModal, closeModal, submitTask,
+              selectedTags, tagQuery, filteredTags, addTag, addTagFromQuery, removeTag,
+              isDesktop, activeStatus, setActive, dragging, boardRef, handleListClick,
+              fabOpen, toggleFab, showTheme, openTheme, closeTheme, themes, applyTheme
+              , showConfirm, openConfirmArchive, closeConfirm, confirmArchive, confirmAction, deleteTask
+              , showArchived, openArchived, closeArchived, archivedTasks, archivedLoading, archivedPage, archivedPageSize, archivedHasMore, archivedSearch, changeArchivedPage, debouncedLoadArchived, restoreTask
+            };
+          },
+        });
+      }
+
+      createVueApp().mount("#app");
+    </script>
+  </body>
+  </html>

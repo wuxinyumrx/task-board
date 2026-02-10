@@ -698,6 +698,8 @@ pre {
   gap: 6px;
   z-index: 5;
 }
+.card-toolbar { white-space: nowrap; }
+.card-toolbar .icon-btn { flex: 0 0 auto; }
 .icon-btn {
   width: 28px;
   height: 28px;
@@ -715,6 +717,33 @@ pre {
   padding: 6px 10px;
   font-size: 12px;
   box-shadow: none;
+}
+.card-menu {
+  position: absolute;
+  top: 36px;
+  right: 8px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  z-index: 10;
+  box-shadow: 0 8px 24px rgba(0,0,0,.35);
+}
+.card-menu .menu-item {
+  border: none;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  padding: 6px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.card-menu .menu-item:hover {
+  background: var(--suggestion-bg);
+  border: 1px solid var(--suggestion-border);
 }
 .drag-ghost {
   opacity: .5;
@@ -746,11 +775,16 @@ pre {
 
 /* 移动端专用 */
 @media (max-width: 767px) {
-  html, body { overflow: hidden; }
+  html, body { 
+    overflow: hidden; 
+    overscroll-behavior-y: none;
+  }
   body { touch-action: manipulation; }
   .container {
+    position: fixed;
+    inset: 0;
     padding: calc(12px + env(safe-area-inset-top)) 16px calc(12px + env(safe-area-inset-bottom)) 16px;
-    height: 100vh;
+    height: 100svh;
     overflow: hidden;
   }
   .tabs { display: none; }
@@ -791,6 +825,7 @@ pre {
     min-height: 0;
     overflow-y: auto;
     -webkit-overflow-scrolling: touch;
+    overscroll-behavior-y: contain;
     max-height: calc(
       100svh
       - 40px              /* 展开队列标题行高度 */
@@ -873,4 +908,29 @@ pre {
 }
 .column-list::-webkit-scrollbar {
   display: none;
+}
+.ptr-indicator {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  font-size: 12px;
+  transition: height .2s ease;
+  overflow: hidden;
+}
+.ptr-indicator.active {
+  color: var(--text);
+}
+.ptr-indicator.refreshing {
+  color: var(--accent);
+}
+@media (min-width: 768px) {
+  .card-menu {
+    flex-direction: row;
+    padding: 4px 6px;
+  }
+  .card-menu .menu-item {
+    white-space: nowrap;
+    padding: 4px 8px;
+  }
 }

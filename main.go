@@ -397,6 +397,82 @@ func (a *App) handleTaskItem(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"id": id, "archived": true})
+	case "update":
+		if r.Method != http.MethodPatch {
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			return
+		}
+		// 解析可选字段
+		var body struct {
+			Title       *string  `json:"title"`
+			Description *string  `json:"description"`
+			Tags        []string `json:"tags"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
+			return
+		}
+		// 构造动态更新语句
+		setParts := []string{}
+		args := []any{}
+		if body.Title != nil {
+			if strings.TrimSpace(*body.Title) == "" {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "title required"})
+				return
+			}
+			setParts = append(setParts, "title = ?")
+			args = append(args, *body.Title)
+		}
+		if body.Description != nil {
+			setParts = append(setParts, "description = ?")
+			args = append(args, *body.Description)
+		}
+		now := time.Now().Format(time.RFC3339)
+		setParts = append(setParts, "updated_at = ?")
+		args = append(args, now, id)
+		if len(setParts) > 0 {
+			q := `UPDATE tasks SET ` + strings.Join(setParts, ", ") + ` WHERE id = ?`
+			if _, err := a.db.Exec(q, args...); err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+				return
+			}
+		}
+		// 更新标签（如果提供）
+		if body.Tags != nil {
+			if err := a.replaceTaskTags(id, body.Tags); err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+				return
+			}
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"id": id, "updated": true})
+	case "copy":
+		if r.Method != http.MethodPost {
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			return
+		}
+		// 读取原任务
+		src, err := a.fetchTaskDetail(id)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		// 创建副本（保持原状态，归档强制为 0）
+		now := time.Now().Format(time.RFC3339)
+		res, err := a.db.Exec(`
+			INSERT INTO tasks (title, description, status, archived, created_at, updated_at)
+			VALUES (?, ?, ?, 0, ?, ?)
+		`, src.Title, src.Description, src.Status, now, now)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		newID, _ := res.LastInsertId()
+		// 复制标签
+		if err := a.replaceTaskTags(newID, src.Tags); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusCreated, map[string]any{"id": newID})
 	case "":
 		// 支持 RESTful 删除：DELETE /api/tasks/{id}
 		if r.Method != http.MethodDelete {
@@ -423,6 +499,44 @@ func (a *App) handleTaskItem(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown action"})
 	}
+}
+
+// fetchTaskDetail 查询并返回单个任务的详细信息（含标签）
+func (a *App) fetchTaskDetail(id int64) (Task, error) {
+	var t Task
+	var created, updated string
+	var archInt int
+	err := a.db.QueryRow(`
+		SELECT id, title, description, status, archived, created_at, updated_at
+		FROM tasks
+		WHERE id = ?
+	`, id).Scan(&t.ID, &t.Title, &t.Description, &t.Status, &archInt, &created, &updated)
+	if err != nil {
+		return t, err
+	}
+	t.Archived = archInt != 0
+	t.CreatedAt, _ = time.Parse(time.RFC3339, created)
+	t.UpdatedAt, _ = time.Parse(time.RFC3339, updated)
+	tags, _ := a.fetchTags(id)
+	t.Tags = tags
+	return t, nil
+}
+
+// replaceTaskTags 将指定任务的标签替换为给定集合（先清空后插入）
+func (a *App) replaceTaskTags(taskID int64, tags []string) error {
+	if _, err := a.db.Exec(`DELETE FROM task_tags WHERE task_id = ?`, taskID); err != nil {
+		return err
+	}
+	for _, tag := range tags {
+		tag = strings.TrimSpace(tag)
+		if tag == "" {
+			continue
+		}
+		if _, err := a.db.Exec(`INSERT INTO task_tags (task_id, tag) VALUES (?, ?)`, taskID, tag); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // parseInt64 将字符串解析为 int64

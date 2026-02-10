@@ -47,7 +47,7 @@
         <!-- 模态窗口：新建任务 -->
         <div class="modal" v-cloak v-if="showModal" @click.self="closeModal">
           <div class="modal-content">
-            <h3 style="margin:0 0 12px;">新建任务</h3>
+            <h3 style="margin:0 0 12px;">{{ isEditing ? "编辑任务" : "新建任务" }}</h3>
             <form @submit.prevent="submitTask" style="display:grid; gap:10px;">
               <input v-model="taskForm.title" placeholder="任务标题" required class="input">
               <textarea v-model="taskForm.description" placeholder="任务描述（可选）" rows="3" class="input"></textarea>
@@ -66,7 +66,7 @@
               </div>
               <div style="display:flex; gap:8px; justify-content:flex-end; margin-top:8px;">
                 <button type="button" class="btn btn-secondary" @click="closeModal">取消</button>
-                <button type="submit" class="btn" :disabled="taskCreating">{{ taskCreating ? "创建中..." : "创建" }}</button>
+                <button type="submit" class="btn" :disabled="taskCreating">{{ isEditing ? (taskCreating ? "保存中..." : "保存修改") : (taskCreating ? "创建中..." : "创建") }}</button>
               </div>
             </form>
           </div>
@@ -157,6 +157,7 @@
           <div class="column" data-status="规划中" :class="{ expanded: !isDesktop && activeStatus==='规划中', collapsed: !isDesktop && activeStatus!=='规划中' }">
             <div class="column-header" @click="setActive('规划中')">规划中</div>
             <div class="column-list" id="col-plan" data-status="规划中" :class="{collapsed: !isDesktop && (dragging || activeStatus!=='规划中')}" @click="handleListClick($event, '规划中')">
+              <div class="ptr-indicator" v-if="!isDesktop" :class="{active: ptrActive, refreshing: ptrRefreshing}" :style="{height: activeStatus==='规划中' ? ptrDistance+'px' : 0}">{{ ptrRefreshing ? '正在刷新...' : (ptrActive ? '松开刷新' : '下拉刷新') }}</div>
               <div class="card" v-for="t in tasks.filter(x => x.status==='规划中' && !x.archived)" :key="t.id" :data-id="t.id">
                 <div class="card-toolbar">
                   <span class="drag-handle" v-if="!isDesktop" title="拖动" aria-label="拖动">
@@ -170,6 +171,27 @@
                       <path d="M12 12v5M9.5 14.5L12 17l2.5-2.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path>
                     </svg>
                   </button>
+                  <button v-if="isDesktop" type="button" class="icon-btn" title="复制" aria-label="复制" @click.stop="copyTask(t.id)">
+                    <svg class="icon" viewBox="0 0 24 24" preserveAspectRatio="xMidYMid meet">
+                      <path d="M9 9h10v10H9zM5 5h10v4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path>
+                    </svg>
+                  </button>
+                  <button v-if="isDesktop" type="button" class="icon-btn" title="修改" aria-label="修改" @click.stop="openEdit(t.id)">
+                    <svg class="icon" viewBox="0 0 24 24" preserveAspectRatio="xMidYMid meet">
+                      <path d="M4 20h4l11-11-4-4L4 16v4zM13 5l4 4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path>
+                    </svg>
+                  </button>
+                  <button v-if="!isDesktop" type="button" class="icon-btn" title="更多" aria-label="更多操作" @click.stop="openCardMenu(t.id)">
+                    <svg class="icon" viewBox="0 0 24 24" preserveAspectRatio="xMidYMid meet">
+                      <circle cx="5" cy="12" r="2" stroke="currentColor" stroke-width="2" fill="none"></circle>
+                      <circle cx="12" cy="12" r="2" stroke="currentColor" stroke-width="2" fill="none"></circle>
+                      <circle cx="19" cy="12" r="2" stroke="currentColor" stroke-width="2" fill="none"></circle>
+                    </svg>
+                  </button>
+                  <div class="card-menu" v-if="cardMenuId===t.id" @click.stop>
+                    <button type="button" class="menu-item" @click="copyTask(t.id); closeCardMenu()">复制</button>
+                    <button type="button" class="menu-item" @click="openEdit(t.id); closeCardMenu()">修改</button>
+                  </div>
                 </div>
                 <div class="card-title">{{ t.title }}</div>
                 <div class="card-desc" v-if="t.description">{{ t.description }}</div>
@@ -188,6 +210,7 @@
           <div class="column" data-status="进行中" :class="{ expanded: !isDesktop && activeStatus==='进行中', collapsed: !isDesktop && activeStatus!=='进行中' }">
             <div class="column-header" @click="setActive('进行中')">进行中</div>
             <div class="column-list" id="col-do" data-status="进行中" :class="{collapsed: !isDesktop && (dragging || activeStatus!=='进行中')}" @click="handleListClick($event, '进行中')">
+              <div class="ptr-indicator" v-if="!isDesktop" :class="{active: ptrActive, refreshing: ptrRefreshing}" :style="{height: activeStatus==='进行中' ? ptrDistance+'px' : 0}">{{ ptrRefreshing ? '正在刷新...' : (ptrActive ? '松开刷新' : '下拉刷新') }}</div>
               <div class="card" v-for="t in tasks.filter(x => x.status==='进行中' && !x.archived)" :key="t.id" :data-id="t.id">
                 <div class="card-toolbar">
                   <span class="drag-handle" v-if="!isDesktop" title="拖动" aria-label="拖动">
@@ -201,6 +224,27 @@
                       <path d="M12 12v5M9.5 14.5L12 17l2.5-2.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path>
                     </svg>
                   </button>
+                  <button v-if="isDesktop" type="button" class="icon-btn" title="复制" aria-label="复制" @click.stop="copyTask(t.id)">
+                    <svg class="icon" viewBox="0 0 24 24" preserveAspectRatio="xMidYMid meet">
+                      <path d="M9 9h10v10H9zM5 5h10v4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path>
+                    </svg>
+                  </button>
+                  <button v-if="isDesktop" type="button" class="icon-btn" title="修改" aria-label="修改" @click.stop="openEdit(t.id)">
+                    <svg class="icon" viewBox="0 0 24 24" preserveAspectRatio="xMidYMid meet">
+                      <path d="M4 20h4l11-11-4-4L4 16v4zM13 5l4 4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path>
+                    </svg>
+                  </button>
+                  <button v-if="!isDesktop" type="button" class="icon-btn" title="更多" aria-label="更多操作" @click.stop="openCardMenu(t.id)">
+                    <svg class="icon" viewBox="0 0 24 24" preserveAspectRatio="xMidYMid meet">
+                      <circle cx="5" cy="12" r="2" stroke="currentColor" stroke-width="2" fill="none"></circle>
+                      <circle cx="12" cy="12" r="2" stroke="currentColor" stroke-width="2" fill="none"></circle>
+                      <circle cx="19" cy="12" r="2" stroke="currentColor" stroke-width="2" fill="none"></circle>
+                    </svg>
+                  </button>
+                  <div class="card-menu" v-if="cardMenuId===t.id" @click.stop>
+                    <button type="button" class="menu-item" @click="copyTask(t.id); closeCardMenu()">复制</button>
+                    <button type="button" class="menu-item" @click="openEdit(t.id); closeCardMenu()">修改</button>
+                  </div>
                 </div>
                 <div class="card-title">{{ t.title }}</div>
                 <div class="card-desc" v-if="t.description">{{ t.description }}</div>
@@ -219,6 +263,7 @@
           <div class="column" data-status="搁置中" :class="{ expanded: !isDesktop && activeStatus==='搁置中', collapsed: !isDesktop && activeStatus!=='搁置中' }">
             <div class="column-header" @click="setActive('搁置中')">搁置中</div>
             <div class="column-list" id="col-hold" data-status="搁置中" :class="{collapsed: !isDesktop && (dragging || activeStatus!=='搁置中')}" @click="handleListClick($event, '搁置中')">
+              <div class="ptr-indicator" v-if="!isDesktop" :class="{active: ptrActive, refreshing: ptrRefreshing}" :style="{height: activeStatus==='搁置中' ? ptrDistance+'px' : 0}">{{ ptrRefreshing ? '正在刷新...' : (ptrActive ? '松开刷新' : '下拉刷新') }}</div>
               <div class="card" v-for="t in tasks.filter(x => x.status==='搁置中' && !x.archived)" :key="t.id" :data-id="t.id">
                 <div class="card-toolbar">
                   <span class="drag-handle" v-if="!isDesktop" title="拖动" aria-label="拖动">
@@ -232,6 +277,27 @@
                       <path d="M12 12v5M9.5 14.5L12 17l2.5-2.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path>
                     </svg>
                   </button>
+                  <button v-if="isDesktop" type="button" class="icon-btn" title="复制" aria-label="复制" @click.stop="copyTask(t.id)">
+                    <svg class="icon" viewBox="0 0 24 24" preserveAspectRatio="xMidYMid meet">
+                      <path d="M9 9h10v10H9zM5 5h10v4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path>
+                    </svg>
+                  </button>
+                  <button v-if="isDesktop" type="button" class="icon-btn" title="修改" aria-label="修改" @click.stop="openEdit(t.id)">
+                    <svg class="icon" viewBox="0 0 24 24" preserveAspectRatio="xMidYMid meet">
+                      <path d="M4 20h4l11-11-4-4L4 16v4zM13 5l4 4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path>
+                    </svg>
+                  </button>
+                  <button v-if="!isDesktop" type="button" class="icon-btn" title="更多" aria-label="更多操作" @click.stop="openCardMenu(t.id)">
+                    <svg class="icon" viewBox="0 0 24 24" preserveAspectRatio="xMidYMid meet">
+                      <circle cx="5" cy="12" r="2" stroke="currentColor" stroke-width="2" fill="none"></circle>
+                      <circle cx="12" cy="12" r="2" stroke="currentColor" stroke-width="2" fill="none"></circle>
+                      <circle cx="19" cy="12" r="2" stroke="currentColor" stroke-width="2" fill="none"></circle>
+                    </svg>
+                  </button>
+                  <div class="card-menu" v-if="cardMenuId===t.id" @click.stop>
+                    <button type="button" class="menu-item" @click="copyTask(t.id); closeCardMenu()">复制</button>
+                    <button type="button" class="menu-item" @click="openEdit(t.id); closeCardMenu()">修改</button>
+                  </div>
                 </div>
                 <div class="card-title">{{ t.title }}</div>
                 <div class="card-desc" v-if="t.description">{{ t.description }}</div>
@@ -250,6 +316,7 @@
           <div class="column" data-status="已完成" :class="{ expanded: !isDesktop && activeStatus==='已完成', collapsed: !isDesktop && activeStatus!=='已完成' }">
             <div class="column-header" @click="setActive('已完成')">已完成</div>
             <div class="column-list" id="col-done" data-status="已完成" :class="{collapsed: !isDesktop && (dragging || activeStatus!=='已完成')}" @click="handleListClick($event, '已完成')">
+              <div class="ptr-indicator" v-if="!isDesktop" :class="{active: ptrActive, refreshing: ptrRefreshing}" :style="{height: activeStatus==='已完成' ? ptrDistance+'px' : 0}">{{ ptrRefreshing ? '正在刷新...' : (ptrActive ? '松开刷新' : '下拉刷新') }}</div>
               <div class="card" v-for="t in tasks.filter(x => x.status==='已完成' && !x.archived)" :key="t.id" :data-id="t.id">
                 <div class="card-toolbar">
                   <span class="drag-handle" v-if="!isDesktop" title="拖动" aria-label="拖动">
@@ -263,6 +330,27 @@
                       <path d="M12 12v5M9.5 14.5L12 17l2.5-2.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path>
                     </svg>
                   </button>
+                  <button v-if="isDesktop" type="button" class="icon-btn" title="复制" aria-label="复制" @click.stop="copyTask(t.id)">
+                    <svg class="icon" viewBox="0 0 24 24" preserveAspectRatio="xMidYMid meet">
+                      <path d="M9 9h10v10H9zM5 5h10v4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path>
+                    </svg>
+                  </button>
+                  <button v-if="isDesktop" type="button" class="icon-btn" title="修改" aria-label="修改" @click.stop="openEdit(t.id)">
+                    <svg class="icon" viewBox="0 0 24 24" preserveAspectRatio="xMidYMid meet">
+                      <path d="M4 20h4l11-11-4-4L4 16v4zM13 5l4 4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path>
+                    </svg>
+                  </button>
+                  <button v-if="!isDesktop" type="button" class="icon-btn" title="更多" aria-label="更多操作" @click.stop="openCardMenu(t.id)">
+                    <svg class="icon" viewBox="0 0 24 24" preserveAspectRatio="xMidYMid meet">
+                      <circle cx="5" cy="12" r="2" stroke="currentColor" stroke-width="2" fill="none"></circle>
+                      <circle cx="12" cy="12" r="2" stroke="currentColor" stroke-width="2" fill="none"></circle>
+                      <circle cx="19" cy="12" r="2" stroke="currentColor" stroke-width="2" fill="none"></circle>
+                    </svg>
+                  </button>
+                  <div class="card-menu" v-if="cardMenuId===t.id" @click.stop>
+                    <button type="button" class="menu-item" @click="copyTask(t.id); closeCardMenu()">复制</button>
+                    <button type="button" class="menu-item" @click="openEdit(t.id); closeCardMenu()">修改</button>
+                  </div>
                 </div>
                 <div class="card-title">{{ t.title }}</div>
                 <div class="card-desc" v-if="t.description">{{ t.description }}</div>
@@ -288,7 +376,7 @@
 
     <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
     <script type="module">
-      import { createApp, ref, onMounted, onBeforeUnmount, computed } from "https://cdn.jsdelivr.net/npm/vue@3.4.21/dist/vue.esm-browser.prod.js";
+      import { createApp, ref, onMounted, onBeforeUnmount, computed, watch } from "https://cdn.jsdelivr.net/npm/vue@3.4.21/dist/vue.esm-browser.prod.js";
 
       // 移除不必要的 ApiClient 与示例注释
 
@@ -303,6 +391,8 @@
             const tagQuery = ref("");
             const allTags = ref([]);
             const showModal = ref(false);
+            const isEditing = ref(false);
+            const editingId = ref(null);
             const isDesktop = ref(window.matchMedia("(min-width: 768px)").matches);
             const boardRef = ref(null);
             const activeStatus = ref("规划中");
@@ -360,7 +450,20 @@
             };
             const openModal = async () => {
               fabOpen.value = false;
+              isEditing.value = false;
+              editingId.value = null;
               showModal.value = true;
+              await loadTags();
+            };
+            const openEdit = async (id) => {
+              const t = tasks.value.find(x => x.id === id);
+              if (!t) return;
+              isEditing.value = true;
+              editingId.value = id;
+              showModal.value = true;
+              taskForm.value = { title: t.title, description: t.description ?? "", tags: "" };
+              selectedTags.value = [...(t.tags || [])];
+              tagQuery.value = "";
               await loadTags();
             };
             const showArchived = ref(false);
@@ -430,15 +533,53 @@
             };
 
             // 移除未使用的时间格式化函数
-
+            // mergeTasks 将服务端返回的任务与当前任务列表进行增量合并（仅更新新增/删除/修改的卡片）
+            const mergeTasks = (nextItems) => {
+              const nextById = new Map();
+              nextItems.forEach(it => nextById.set(it.id, it));
+              const currentById = new Map();
+              tasks.value.forEach(it => currentById.set(it.id, it));
+              // 更新已有项的字段（保持对象引用不变以减少重渲染）
+              nextItems.forEach(it => {
+                const cur = currentById.get(it.id);
+                if (cur) {
+                  if (cur.title !== it.title) cur.title = it.title;
+                  if (cur.description !== it.description) cur.description = it.description;
+                  if (cur.status !== it.status) cur.status = it.status;
+                  if (cur.archived !== it.archived) cur.archived = it.archived;
+                  if ((cur.tags || []).join("|") !== (it.tags || []).join("|")) cur.tags = Array.isArray(it.tags) ? [...it.tags] : [];
+                  // 时间字段（用于排序或展示）
+                  cur.created_at = it.created_at;
+                  cur.updated_at = it.updated_at;
+                }
+              });
+              // 依据服务器顺序重建数组（已有项复用引用，新增项插入）
+              const result = nextItems.map(it => currentById.get(it.id) || it);
+              tasks.value = result;
+            };
             // 初始化任务列表与拖拽
             const loadTasks = async () => {
               try {
                 const data = await fetch(`/api/tasks?_=${Date.now()}`, { headers: { "Accept": "application/json" } }).then(r => r.json());
-                tasks.value = data.items || [];
+                const items = data.items || [];
+                mergeTasks(items);
               } catch (err) {
                 console.error(err);
               }
+            };
+            // 桌面端定时刷新：每 2 秒刷新一次（仅增量更新）
+            let refreshTimer = null;
+            let refreshBusy = false;
+            const startDesktopRefresh = () => {
+              if (refreshTimer) return;
+              refreshTimer = setInterval(async () => {
+                if (refreshBusy) return;
+                refreshBusy = true;
+                try { await loadTasks(); } finally { refreshBusy = false; }
+              }, 2000);
+            };
+            const stopDesktopRefresh = () => {
+              if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
             };
             const loadTags = async (q = "") => {
               try {
@@ -472,22 +613,40 @@
               tagQuery.value = "";
               selectedTags.value = [];
               taskForm.value = { title: "", description: "", tags: "" };
+              isEditing.value = false;
+              editingId.value = null;
             };
             const submitTask = async () => {
               if (!taskForm.value.title) return;
               taskCreating.value = true;
               try {
-                await fetch("/api/tasks", {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json", "Accept": "application/json" },
-                  body: JSON.stringify({ title: taskForm.value.title, description: taskForm.value.description, tags: selectedTags.value }),
-                });
+                if (isEditing.value && editingId.value != null) {
+                  await fetch(`/api/tasks/${editingId.value}/update`, {
+                    method: "PATCH",
+                    headers: { "Content-Type": "application/json", "Accept": "application/json" },
+                    body: JSON.stringify({ title: taskForm.value.title, description: taskForm.value.description, tags: selectedTags.value }),
+                  });
+                } else {
+                  await fetch("/api/tasks", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json", "Accept": "application/json" },
+                    body: JSON.stringify({ title: taskForm.value.title, description: taskForm.value.description, tags: selectedTags.value }),
+                  });
+                }
                 closeModal();
                 await loadTasks();
               } catch (err) {
-                alert("创建失败: " + err.message);
+                alert((isEditing.value ? "保存失败: " : "创建失败: ") + err.message);
               } finally {
                 taskCreating.value = false;
+              }
+            };
+            const copyTask = async (id) => {
+              try {
+                await fetch(`/api/tasks/${id}/copy`, { method: "POST", headers: { "Accept": "application/json" } });
+                await loadTasks();
+              } catch (err) {
+                alert("复制失败: " + err.message);
               }
             };
             const updateTaskStatus = async (id, status) => {
@@ -642,12 +801,89 @@
               isDesktop.value = window.matchMedia("(min-width: 768px)").matches;
               destroySortables();
               initSortable();
+              setupPTR();
             };
             window.addEventListener("resize", handleResize);
+            // 卡片菜单（更多操作）
+            const cardMenuId = ref(null);
+            const openCardMenu = (id) => { cardMenuId.value = id; };
+            const closeCardMenu = () => { cardMenuId.value = null; };
+            document.addEventListener("click", (e) => {
+              const t = e.target;
+              if (t.closest(".card-toolbar")) return;
+              if (cardMenuId.value != null) cardMenuId.value = null;
+            });
+            // 下拉刷新（移动端）
+            const ptrActive = ref(false);
+            const ptrDistance = ref(0);
+            const ptrRefreshing = ref(false);
+            const PTR_THRESHOLD = 64;
+            let ptrStartY = 0;
+            let ptrCanPull = false;
+            let ptrEl = null;
+            const setupPTR = () => {
+              if (isDesktop.value) return;
+              const sel = `.column[data-status="${activeStatus.value}"] .column-list`;
+              const el = document.querySelector(sel);
+              if (!el) return;
+              if (ptrEl && ptrEl !== el) {
+                ptrEl.removeEventListener("touchstart", onPtrStart);
+                ptrEl.removeEventListener("touchmove", onPtrMove);
+                ptrEl.removeEventListener("touchend", onPtrEnd);
+              }
+              ptrEl = el;
+              el.addEventListener("touchstart", onPtrStart, { passive: true });
+              el.addEventListener("touchmove", onPtrMove, { passive: false });
+              el.addEventListener("touchend", onPtrEnd, { passive: true });
+            };
+            const onPtrStart = (e) => {
+              if (isDesktop.value) return;
+              ptrCanPull = (ptrEl?.scrollTop || 0) <= 0 && !ptrRefreshing.value;
+              ptrStartY = e.touches[0].clientY;
+              ptrDistance.value = 0;
+              ptrActive.value = false;
+            };
+            const onPtrMove = (e) => {
+              if (!ptrCanPull) return;
+              const dy = e.touches[0].clientY - ptrStartY;
+              if (dy > 0) {
+                if (e.cancelable) e.preventDefault();
+                ptrDistance.value = Math.min(dy, 120);
+                ptrActive.value = ptrDistance.value >= PTR_THRESHOLD;
+              }
+            };
+            const onPtrEnd = async () => {
+              if (!ptrCanPull) return;
+              if (ptrActive.value && ptrDistance.value >= PTR_THRESHOLD) {
+                ptrRefreshing.value = true;
+                try { await loadTasks(); } finally {
+                  setTimeout(() => {
+                    ptrRefreshing.value = false;
+                    ptrActive.value = false;
+                    ptrDistance.value = 0;
+                  }, 300);
+                }
+              } else {
+                ptrActive.value = false;
+                ptrDistance.value = 0;
+              }
+              ptrCanPull = false;
+            };
+            watch(activeStatus, () => { setupPTR(); });
+            // 根据是否桌面端启用/停用定时刷新
+            watch(isDesktop, (val) => {
+              if (val) {
+                stopDesktopRefresh(); // 防止重复
+                startDesktopRefresh();
+              } else {
+                stopDesktopRefresh();
+              }
+            }, { immediate: true });
             onMounted(async () => {
               await loadTasks();
               await loadTags();
               initSortable();
+              setupPTR();
               const onDocClick = (e) => {
                 if (!fabOpen.value) return;
                 const target = e.target;
@@ -657,6 +893,7 @@
               document.addEventListener("click", onDocClick);
               onBeforeUnmount(() => {
                 document.removeEventListener("click", onDocClick);
+                stopDesktopRefresh();
               });
               // 应用已保存主题
               try {
@@ -674,13 +911,60 @@
               }
             });
             return {
-              tasks, taskForm, taskCreating, archiveTask,
-              showModal, openModal, closeModal, submitTask,
-              selectedTags, tagQuery, filteredTags, addTag, addTagFromQuery, removeTag,
-              isDesktop, activeStatus, setActive, dragging, boardRef, handleListClick,
-              fabOpen, toggleFab, showTheme, openTheme, closeTheme, themes, applyTheme
-              , showConfirm, openConfirmArchive, closeConfirm, confirmArchive, confirmAction, deleteTask
-              , showArchived, openArchived, closeArchived, archivedTasks, archivedLoading, archivedPage, archivedPageSize, archivedHasMore, archivedSearch, changeArchivedPage, debouncedLoadArchived, restoreTask
+              tasks,
+              taskForm,
+              taskCreating,
+              archiveTask,
+              showModal,
+              openModal,
+              closeModal,
+              submitTask,
+              selectedTags,
+              tagQuery,
+              filteredTags,
+              addTag,
+              addTagFromQuery,
+              removeTag,
+              isDesktop,
+              activeStatus,
+              setActive,
+              dragging,
+              boardRef,
+              handleListClick,
+              fabOpen,
+              toggleFab,
+              showTheme,
+              openTheme,
+              closeTheme,
+              themes,
+              applyTheme,
+              showConfirm,
+              openConfirmArchive,
+              closeConfirm,
+              confirmArchive,
+              confirmAction,
+              deleteTask,
+              showArchived,
+              openArchived,
+              closeArchived,
+              archivedTasks,
+              archivedLoading,
+              archivedPage,
+              archivedPageSize,
+              archivedHasMore,
+              archivedSearch,
+              changeArchivedPage,
+              debouncedLoadArchived,
+              restoreTask,
+              openEdit,
+              copyTask,
+              cardMenuId,
+              openCardMenu,
+              closeCardMenu,
+              isEditing,
+              ptrActive,
+              ptrDistance,
+              ptrRefreshing
             };
           },
         });

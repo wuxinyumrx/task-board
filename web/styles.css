@@ -269,6 +269,23 @@ body {
   font-size: clamp(14px, 1.1vw + 0.25rem, 18px);
 }
 
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(180deg, rgba(255,255,255,.03), rgba(255,255,255,0) 12%),
+    repeating-linear-gradient(0deg, rgba(255,255,255,.02) 0 1px, transparent 1px 12px),
+    repeating-linear-gradient(90deg, rgba(255,255,255,.02) 0 1px, transparent 1px 12px);
+  z-index: 0;
+}
+
+.container {
+  position: relative;
+  z-index: 1;
+}
+
 .container {
   width: 100%;
   max-width: none;
@@ -385,8 +402,10 @@ pre {
   user-select: none;
   touch-action: manipulation;
   pointer-events: auto;
+  transition: transform .15s ease, box-shadow .15s ease, background-color .15s ease;
 }
 .fab:hover { background: var(--brand-600); }
+.fab:active { transform: scale(.98); }
 .fab-item {
   width: 44px;
   height: 44px;
@@ -436,6 +455,7 @@ pre {
   border: 1px solid var(--border);
   border-radius: 12px;
   padding: 16px;
+  box-shadow: 0 18px 48px rgba(0,0,0,.45), 0 0 0 1px rgba(255,255,255,.04) inset;
 }
 /* 归档列表弹窗样式 */
 .archive-modal {
@@ -577,11 +597,19 @@ pre {
   gap: 16px;
   scroll-behavior: smooth;
 }
+
+.board {
+  padding-top: 6px;
+  transition: transform .2s ease, opacity .2s ease;
+}
 .column {
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 12px;
   overflow: hidden;
+  box-shadow: 0 6px 14px rgba(0,0,0,.18);
+  transform: translateZ(0);
+  transition: box-shadow .2s ease, transform .2s ease, border-color .2s ease, background-color .2s ease;
 }
 .column.drop-target {
   border-color: var(--border);
@@ -600,6 +628,14 @@ pre {
   border-bottom: 1px solid var(--border);
   background: var(--surface-2);
   font-size: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  letter-spacing: .2px;
+  position: relative;
+}
+.column-header::after {
+  content: none;
 }
 .column[data-status="规划中"] { border-left: 3px solid var(--plan-accent); }
 .column[data-status="进行中"] { border-left: 3px solid var(--do-accent); }
@@ -662,6 +698,16 @@ pre {
   padding: 12px;
   position: relative;
   transition: transform .12s ease-out, box-shadow .12s ease-out, border-color .12s ease-out, background-color .12s ease-out;
+  box-shadow: 0 6px 20px rgba(0,0,0,.22), inset 0 1px 0 rgba(255,255,255,.04);
+  overflow: hidden;
+}
+.card::before {
+  content: none;
+}
+.card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 14px 30px rgba(0,0,0,.28), inset 0 1px 0 rgba(255,255,255,.06);
+  border-color: rgba(255,255,255,.15);
 }
 .column[data-status="规划中"] .card { background: var(--plan-card-bg); border-left: 3px solid var(--plan-accent); }
 .column[data-status="进行中"] .card { background: var(--do-card-bg); border-left: 3px solid var(--do-accent); }
@@ -684,6 +730,7 @@ pre {
   border-radius: 999px;
   font-size: 12px;
   font-weight: 500;
+  box-shadow: none;
 }
 .column[data-status="规划中"] .tag { color: var(--plan-accent); }
 .column[data-status="进行中"] .tag { color: var(--do-accent); }
@@ -711,8 +758,11 @@ pre {
   align-items: center;
   justify-content: center;
   cursor: pointer;
+  transition: background-color .15s ease, border-color .15s ease, transform .1s ease, color .15s ease, box-shadow .15s ease;
 }
 .icon-btn:hover { color: var(--accent); border-color: var(--accent); }
+.icon-btn:active { transform: scale(.96); }
+.icon-btn:focus-visible { outline: none; box-shadow: 0 0 0 2px rgba(45,212,191,.35); border-color: rgba(45,212,191,.6); }
 .btn-small {
   padding: 6px 10px;
   font-size: 12px;
@@ -771,6 +821,7 @@ pre {
     grid-template-columns: repeat(4, 1fr);
   }
   .mobile-only { display: none; }
+  .container { padding-top: 24px; }
 }
 
 /* 移动端专用 */
@@ -917,6 +968,7 @@ pre {
   font-size: 12px;
   transition: height .2s ease;
   overflow: hidden;
+  letter-spacing: .2px;
 }
 .ptr-indicator.active {
   color: var(--text);

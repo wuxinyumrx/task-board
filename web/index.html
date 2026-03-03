@@ -31,6 +31,12 @@
               <path d="M4 19h16M7 4h6l7 7v8H7zM13 4v6h6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"></path>
             </svg>
           </button>
+          <button class="fab-item" type="button" title="定时任务" aria-label="定时任务" @click="openSchedules">
+            <svg class="icon" viewBox="0 0 24 24" preserveAspectRatio="xMidYMid meet">
+              <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2"></circle>
+              <path d="M12 7v5l3 3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path>
+            </svg>
+          </button>
           <button class="fab-item" type="button" title="切换主题" aria-label="切换主题" @click="openTheme">
             <svg class="icon" viewBox="0 0 24 24" preserveAspectRatio="xMidYMid meet">
               <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2"></circle>
@@ -108,6 +114,106 @@
               <button type="button" class="btn btn-secondary" @click="closeConfirm">取消</button>
               <button type="button" class="btn" @click="confirmArchive">{{ confirmAction === 'delete' ? '彻底删除' : '归档' }}</button>
             </div>
+          </div>
+        </div>
+        <!-- 模态窗口：定时任务管理 -->
+        <div class="modal" v-cloak v-if="showSchedules" @click.self="closeSchedules">
+          <div class="modal-content" style="max-width:760px;">
+            <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom: 10px;">
+              <h3 style="margin:0;">定时任务</h3>
+              <div style="display:flex; gap:8px;">
+                <button class="btn btn-small" type="button" @click="openScheduleForm()">新增</button>
+                <button class="btn btn-secondary btn-small" type="button" @click="closeSchedules">关闭</button>
+              </div>
+            </div>
+            <div class="arch-list" style="max-height: 60vh;">
+              <div class="arch-item" v-for="s in schedules" :key="s.id">
+                <div style="flex:1;">
+                  <div class="arch-title">{{ s.name }}</div>
+                  <div class="arch-desc">{{ formatSchedule(s) }}</div>
+                  <div class="arch-tags" v-if="(s.tags||[]).length">
+                    <span class="tag" v-for="tag in s.tags" :key="tag">{{ tag }}</span>
+                  </div>
+                </div>
+                <div class="arch-actions">
+                  <button class="icon-btn" title="编辑" aria-label="编辑" @click="openScheduleForm(s)">
+                    <svg class="icon" viewBox="0 0 24 24" preserveAspectRatio="xMidYMid meet">
+                      <path d="M4 20h4l11-11-4-4L4 16v4zM13 5l4 4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path>
+                    </svg>
+                  </button>
+                  <button class="icon-btn" title="删除" aria-label="删除" @click="deleteSchedule(s.id)">
+                    <svg class="icon" viewBox="0 0 24 24" preserveAspectRatio="xMidYMid meet">
+                      <path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"></path>
+                    </svg>
+                  </button>
+                </div>
+              </div>
+              <div class="empty-state" v-if="schedules.length===0">暂无定时任务</div>
+            </div>
+          </div>
+        </div>
+        <!-- 模态窗口：新增/编辑定时任务 -->
+        <div class="modal" v-cloak v-if="showScheduleForm" @click.self="closeScheduleForm">
+          <div class="modal-content" style="max-width:560px;">
+            <h3 style="margin:0 0 12px;">{{ isEditingSchedule ? "编辑定时任务" : "新增定时任务" }}</h3>
+            <form @submit.prevent="submitSchedule" style="display:grid; gap:10px;">
+              <input v-model="scheduleForm.name" placeholder="定时任务名称" required class="input">
+              <div>
+                <label style="display:block; margin-bottom:6px;">周期</label>
+                <div style="display:flex; gap:8px; flex-wrap: wrap;">
+                  <label class="confirm-option"><input type="radio" value="day" v-model="scheduleForm.period"><span>天</span></label>
+                  <label class="confirm-option"><input type="radio" value="week" v-model="scheduleForm.period"><span>周</span></label>
+                  <label class="confirm-option"><input type="radio" value="month" v-model="scheduleForm.period"><span>月</span></label>
+                  <label class="confirm-option"><input type="radio" value="year" v-model="scheduleForm.period"><span>年</span></label>
+                </div>
+              </div>
+              <div v-if="scheduleForm.period==='week'">
+                <label style="display:block; margin-bottom:6px;">每周</label>
+                <select v-model.number="scheduleForm.week_day" class="input">
+                  <option v-for="d in 7" :key="d" :value="d">周{{ ['一','二','三','四','五','六','日'][d-1] }}</option>
+                </select>
+              </div>
+              <div v-if="scheduleForm.period==='month'">
+                <label style="display:block; margin-bottom:6px;">每月</label>
+                <select v-model.number="scheduleForm.month_day" class="input">
+                  <option v-for="d in 31" :key="d" :value="d">{{ d }} 日</option>
+                </select>
+              </div>
+              <div v-if="scheduleForm.period==='year'">
+                <label style="display:block; margin-bottom:6px;">每年</label>
+                <div style="display:flex; gap:8px;">
+                  <select v-model.number="scheduleForm.month" class="input"><option v-for="m in 12" :key="m" :value="m">{{ m }} 月</option></select>
+                  <select v-model.number="scheduleForm.month_day" class="input"><option v-for="d in 31" :key="d" :value="d">{{ d }} 日</option></select>
+                </div>
+              </div>
+              <div style="display:flex; gap:8px;">
+                <div style="flex:1;">
+                  <label style="display:block; margin-bottom:6px;">开始日期</label>
+                  <input v-model="scheduleForm.start_date" type="date" class="input" required>
+                </div>
+                <div style="flex:1;">
+                  <label style="display:block; margin-bottom:6px;">结束日期（可选）</label>
+                  <input v-model="scheduleForm.end_date" type="date" class="input">
+                </div>
+              </div>
+              <div>
+                <label style="display:block; margin-bottom:6px;">标签</label>
+                <div class="chips">
+                  <span class="chip" v-for="(tag,idx) in scheduleSelectedTags" :key="tag">
+                    {{ tag }}
+                    <button type="button" class="chip-remove" @click="scheduleRemoveTag(idx)">×</button>
+                  </span>
+                </div>
+                <input v-model="scheduleTagQuery" @keydown.enter.prevent="scheduleAddTagFromQuery" placeholder="搜索或新建标签" class="input">
+                <div class="suggestions" v-if="scheduleFilteredTags.length">
+                  <button type="button" class="suggestion" v-for="t in scheduleFilteredTags" :key="t" @click="scheduleAddTag(t)">{{ t }}</button>
+                </div>
+              </div>
+              <div style="display:flex; gap:8px; justify-content:flex-end; margin-top:8px;">
+                <button type="button" class="btn btn-secondary" @click="closeScheduleForm">取消</button>
+                <button type="submit" class="btn">{{ isEditingSchedule ? "保存修改" : "创建" }}</button>
+              </div>
+            </form>
           </div>
         </div>
         <!-- 模态窗口：归档任务列表 -->
@@ -521,6 +627,135 @@
               } catch (err) {
                 alert("恢复失败: " + err.message);
               }
+            };
+            // 定时任务管理
+            const showSchedules = ref(false);
+            const showScheduleForm = ref(false);
+            const schedules = ref([]);
+            const isEditingSchedule = ref(false);
+            const editingScheduleId = ref(null);
+            const scheduleForm = ref({
+              name: "",
+              period: "day",
+              week_day: 1,
+              month_day: 1,
+              month: 1,
+              start_date: "",
+              end_date: ""
+            });
+            const scheduleSelectedTags = ref([]);
+            const scheduleTagQuery = ref("");
+            const scheduleFilteredTags = computed(() => {
+              const q = scheduleTagQuery.value.trim().toLowerCase();
+              const pool = allTags.value.filter(t => !scheduleSelectedTags.value.includes(t));
+              if (!q) return pool.slice(0, 10);
+              return pool.filter(t => t.toLowerCase().includes(q)).slice(0, 10);
+            });
+            const scheduleAddTag = (t) => {
+              if (!scheduleSelectedTags.value.includes(t)) scheduleSelectedTags.value.push(t);
+              scheduleTagQuery.value = "";
+            };
+            const scheduleAddTagFromQuery = () => {
+              const t = scheduleTagQuery.value.trim();
+              if (!t) return;
+              scheduleAddTag(t);
+            };
+            const scheduleRemoveTag = (idx) => {
+              scheduleSelectedTags.value.splice(idx, 1);
+            };
+            const loadSchedules = async () => {
+              try {
+                const data = await fetch("/api/schedules", { headers: { "Accept": "application/json" } }).then(r => r.json());
+                schedules.value = data.items || [];
+              } catch (err) {
+                console.error(err);
+              }
+            };
+            const openSchedules = async () => {
+              fabOpen.value = false;
+              await loadSchedules();
+              showSchedules.value = true;
+            };
+            const closeSchedules = () => { showSchedules.value = false; };
+            const openScheduleForm = (s) => {
+              isEditingSchedule.value = !!s;
+              showScheduleForm.value = true;
+              if (s) {
+                editingScheduleId.value = s.id;
+                scheduleForm.value = {
+                  name: s.name,
+                  period: s.period,
+                  week_day: s.week_day ?? 1,
+                  month_day: s.month_day ?? 1,
+                  month: s.month ?? 1,
+                  start_date: s.start_date,
+                  end_date: s.end_date ?? ""
+                };
+                scheduleSelectedTags.value = [...(s.tags || [])];
+                scheduleTagQuery.value = "";
+              } else {
+                editingScheduleId.value = null;
+                scheduleForm.value = { name: "", period: "day", week_day: 1, month_day: 1, month: 1, start_date: "", end_date: "" };
+                scheduleSelectedTags.value = [];
+                scheduleTagQuery.value = "";
+              }
+            };
+            const closeScheduleForm = () => {
+              showScheduleForm.value = false;
+              isEditingSchedule.value = false;
+              editingScheduleId.value = null;
+              scheduleSelectedTags.value = [];
+              scheduleTagQuery.value = "";
+            };
+            const submitSchedule = async () => {
+              const p = scheduleForm.value;
+              const payload = {
+                name: p.name,
+                period: p.period,
+                start_date: p.start_date,
+              };
+              if (p.period === "week") payload["week_day"] = Number(p.week_day);
+              if (p.period === "month") payload["month_day"] = Number(p.month_day);
+              if (p.period === "year") { payload["month"] = Number(p.month); payload["month_day"] = Number(p.month_day); }
+              if (p.end_date) payload["end_date"] = p.end_date;
+              if (scheduleSelectedTags.value.length) payload["tags"] = scheduleSelectedTags.value;
+              try {
+                if (isEditingSchedule.value && editingScheduleId.value != null) {
+                  await fetch(`/api/schedules/${editingScheduleId.value}`, {
+                    method: "PATCH",
+                    headers: { "Content-Type": "application/json", "Accept": "application/json" },
+                    body: JSON.stringify(payload),
+                  });
+                } else {
+                  await fetch(`/api/schedules`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json", "Accept": "application/json" },
+                    body: JSON.stringify(payload),
+                  });
+                }
+                await loadSchedules();
+                closeScheduleForm();
+              } catch (err) {
+                alert("保存失败: " + err.message);
+              }
+            };
+            const deleteSchedule = async (id) => {
+              if (!confirm("确认删除该定时任务？")) return;
+              try {
+                await fetch(`/api/schedules/${id}`, { method: "DELETE", headers: { "Accept": "application/json" } });
+                await loadSchedules();
+              } catch (err) {
+                alert("删除失败: " + err.message);
+              }
+            };
+            const formatSchedule = (s) => {
+              let when = "";
+              if (s.period === "day") when = "每天";
+              if (s.period === "week") when = `每周 周${["一","二","三","四","五","六","日"][(s.week_day||1)-1]}`;
+              if (s.period === "month") when = `每月 ${s.month_day} 日`;
+              if (s.period === "year") when = `每年 ${s.month} 月 ${s.month_day} 日`;
+              const range = s.end_date ? `${s.start_date} ~ ${s.end_date}` : `${s.start_date} 起`;
+              return `${when} · ${range}`;
             };
             const handleListClick = (evt, status) => {
               if (isDesktop.value) return;
@@ -956,6 +1191,10 @@
               changeArchivedPage,
               debouncedLoadArchived,
               restoreTask,
+              // Schedules
+              showSchedules, openSchedules, closeSchedules, schedules,
+              showScheduleForm, openScheduleForm, closeScheduleForm, submitSchedule, deleteSchedule, scheduleForm, isEditingSchedule, formatSchedule,
+              scheduleSelectedTags, scheduleTagQuery, scheduleFilteredTags, scheduleAddTag, scheduleAddTagFromQuery, scheduleRemoveTag,
               openEdit,
               copyTask,
               cardMenuId,

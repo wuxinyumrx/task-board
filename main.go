@@ -3,6 +3,7 @@ package main
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -47,6 +48,17 @@ func (a *App) routes() *http.ServeMux {
 	mux.HandleFunc("/api/tasks/", a.handleTaskItem)
 	// 标签查询 API
 	mux.HandleFunc("/api/tags", a.handleTags)
+	// 定时任务 API
+	mux.HandleFunc("/api/schedules", a.handleSchedules)
+	mux.HandleFunc("/api/schedules/", a.handleScheduleItem)
+	mux.HandleFunc("/api/schedules.run", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			return
+		}
+		a.runScheduleOnce()
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	})
 
 	// 静态资源与首页
 	fs := http.FileServer(http.Dir(a.staticDir))
@@ -106,6 +118,27 @@ func (a *App) initDB() error {
 		FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE
 	);
 	CREATE INDEX IF NOT EXISTS idx_task_tags_task ON task_tags(task_id);
+	CREATE TABLE IF NOT EXISTS schedule_tasks (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		name TEXT NOT NULL,
+		period TEXT NOT NULL,                        -- day, week, month, year
+		week_day INTEGER,                            -- 0-6 (0=Sunday) for week
+		month_day INTEGER,                           -- 1-31 for month/year
+		month INTEGER,                               -- 1-12 for year
+		start_date TEXT NOT NULL,                    -- YYYY-MM-DD
+		end_date TEXT,                               -- YYYY-MM-DD or NULL (unlimited)
+		last_run_date TEXT,                          -- YYYY-MM-DD; used to avoid duplicate generation for a day
+		created_at TEXT NOT NULL,
+		updated_at TEXT NOT NULL
+	);
+	CREATE INDEX IF NOT EXISTS idx_schedule_tasks_period ON schedule_tasks(period);
+	CREATE TABLE IF NOT EXISTS schedule_task_tags (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		schedule_id INTEGER NOT NULL,
+		tag TEXT NOT NULL,
+		FOREIGN KEY(schedule_id) REFERENCES schedule_tasks(id) ON DELETE CASCADE
+	);
+	CREATE INDEX IF NOT EXISTS idx_schedule_task_tags_sid ON schedule_task_tags(schedule_id);
 	`
 	if _, err := a.db.Exec(schema); err != nil {
 		return err
@@ -130,6 +163,22 @@ type Task struct {
 	Status      string    `json:"status"`
 	Tags        []string  `json:"tags"`
 	Archived    bool      `json:"archived"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+// ScheduleTask 表示定时任务的配置实体
+type ScheduleTask struct {
+	ID          int64     `json:"id"`
+	Name        string    `json:"name"`
+	Period      string    `json:"period"`        // day/week/month/year
+	WeekDay     *int      `json:"week_day"`      // 1-7 前端表示；后端存 0-6
+	MonthDay    *int      `json:"month_day"`     // 1-31
+	Month       *int      `json:"month"`         // 1-12
+	StartDate   string    `json:"start_date"`    // YYYY-MM-DD
+	EndDate     *string   `json:"end_date"`      // YYYY-MM-DD or null
+	LastRunDate *string   `json:"last_run_date"` // YYYY-MM-DD or null
+	Tags        []string  `json:"tags"`          // 关联标签
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
 }
@@ -539,6 +588,573 @@ func (a *App) replaceTaskTags(taskID int64, tags []string) error {
 	return nil
 }
 
+// handleSchedules 处理定时任务的创建与列表
+func (a *App) handleSchedules(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		rows, err := a.db.Query(`
+			SELECT id, name, period, week_day, month_day, month, start_date, end_date, last_run_date, created_at, updated_at
+			FROM schedule_tasks
+			ORDER BY id DESC
+		`)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		defer rows.Close()
+		var out []ScheduleTask
+		for rows.Next() {
+			var s ScheduleTask
+			var weekDay, monthDay, month sql.NullInt64
+			var endDate, lastRun sql.NullString
+			var created, updated string
+			if err := rows.Scan(&s.ID, &s.Name, &s.Period, &weekDay, &monthDay, &month, &s.StartDate, &endDate, &lastRun, &created, &updated); err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+				return
+			}
+			if weekDay.Valid {
+				v := int(weekDay.Int64) + 1
+				s.WeekDay = &v
+			}
+			if monthDay.Valid {
+				v := int(monthDay.Int64)
+				s.MonthDay = &v
+			}
+			if month.Valid {
+				v := int(month.Int64)
+				s.Month = &v
+			}
+			if endDate.Valid {
+				v := endDate.String
+				s.EndDate = &v
+			}
+			if lastRun.Valid {
+				v := lastRun.String
+				s.LastRunDate = &v
+			}
+			if tags, err := a.fetchScheduleTags(s.ID); err == nil {
+				s.Tags = tags
+			}
+			s.CreatedAt, _ = time.Parse(time.RFC3339, created)
+			s.UpdatedAt, _ = time.Parse(time.RFC3339, updated)
+			out = append(out, s)
+		}
+		if out == nil {
+			out = []ScheduleTask{}
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"items": out})
+	case http.MethodPost:
+		var body struct {
+			Name      string   `json:"name"`
+			Period    string   `json:"period"`     // day/week/month/year
+			WeekDay   *int     `json:"week_day"`   // 1-7
+			MonthDay  *int     `json:"month_day"`  // 1-31
+			Month     *int     `json:"month"`      // 1-12
+			StartDate string   `json:"start_date"` // YYYY-MM-DD
+			EndDate   *string  `json:"end_date"`   // YYYY-MM-DD
+			Tags      []string `json:"tags"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
+			return
+		}
+		if err := validateScheduleInput(body.Name, body.Period, body.WeekDay, body.MonthDay, body.Month, body.StartDate, body.EndDate); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		now := time.Now().Format(time.RFC3339)
+		var endDate sql.NullString
+		if body.EndDate != nil && strings.TrimSpace(*body.EndDate) != "" {
+			endDate = sql.NullString{String: *body.EndDate, Valid: true}
+		}
+		var weekDay sql.NullInt64
+		if body.WeekDay != nil {
+			// 存 0-6
+			wd := int64((*body.WeekDay - 1 + 7) % 7)
+			weekDay = sql.NullInt64{Int64: wd, Valid: true}
+		}
+		var monthDay sql.NullInt64
+		if body.MonthDay != nil {
+			monthDay = sql.NullInt64{Int64: int64(*body.MonthDay), Valid: true}
+		}
+		var month sql.NullInt64
+		if body.Month != nil {
+			month = sql.NullInt64{Int64: int64(*body.Month), Valid: true}
+		}
+		res, err := a.db.Exec(`
+			INSERT INTO schedule_tasks (name, period, week_day, month_day, month, start_date, end_date, last_run_date, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
+		`, body.Name, strings.ToLower(body.Period), weekDay, monthDay, month, body.StartDate, endDate, now, now)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		newID, _ := res.LastInsertId()
+		if err := a.replaceScheduleTags(newID, body.Tags); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		// 立即检查一次以便当日匹配时即时生成
+		a.runScheduleOnce()
+		writeJSON(w, http.StatusCreated, map[string]any{"id": newID})
+	default:
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+	}
+}
+
+// handleScheduleItem 处理定时任务的查看、更新与删除
+func (a *App) handleScheduleItem(w http.ResponseWriter, r *http.Request) {
+	rest := strings.TrimPrefix(r.URL.Path, "/api/schedules/")
+	parts := strings.Split(rest, "/")
+	if len(parts) == 0 || strings.TrimSpace(parts[0]) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid path"})
+		return
+	}
+	id, err := parseInt64(parts[0])
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid id"})
+		return
+	}
+	action := ""
+	if len(parts) > 1 {
+		action = parts[1]
+	}
+	if action == "generate" {
+		if r.Method != http.MethodPost {
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			return
+		}
+		today := time.Now().Format("2006-01-02")
+		var name, period, startDate string
+		var weekDay, monthDay, month sql.NullInt64
+		var endDate, lastRun sql.NullString
+		err := a.db.QueryRow(`SELECT name, period, week_day, month_day, month, start_date, end_date, last_run_date FROM schedule_tasks WHERE id = ?`, id).
+			Scan(&name, &period, &weekDay, &monthDay, &month, &startDate, &endDate, &lastRun)
+		if err != nil {
+			if err == sql.ErrNoRows {
+				writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+				return
+			}
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		if !(startDate <= today && (!endDate.Valid || endDate.String >= today)) {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "out of date range"})
+			return
+		}
+		if lastRun.Valid && lastRun.String == today {
+			writeJSON(w, http.StatusOK, map[string]any{"id": id, "generated": false})
+			return
+		}
+		ok := false
+		now := time.Now()
+		switch strings.ToLower(period) {
+		case "day":
+			ok = true
+		case "week":
+			if weekDay.Valid && int(now.Weekday()) == int(weekDay.Int64) {
+				ok = true
+			}
+		case "month":
+			if monthDay.Valid && now.Day() == int(monthDay.Int64) {
+				ok = true
+			}
+		case "year":
+			if month.Valid && monthDay.Valid && int(now.Month()) == int(month.Int64) && now.Day() == int(monthDay.Int64) {
+				ok = true
+			}
+		}
+		if !ok {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "not match today"})
+			return
+		}
+		title := fmt.Sprintf("%s %s", name, today)
+		nowStr := time.Now().Format(time.RFC3339)
+		res, err := a.db.Exec(`INSERT INTO tasks (title, description, status, archived, created_at, updated_at) VALUES (?, ?, ?, 0, ?, ?)`, title, "", "规划中", nowStr, nowStr)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		newTaskID, _ := res.LastInsertId()
+		if tags, err := a.fetchScheduleTags(id); err == nil {
+			_ = a.replaceTaskTags(newTaskID, tags)
+		}
+		_, _ = a.db.Exec(`UPDATE schedule_tasks SET last_run_date = ?, updated_at = ? WHERE id = ?`, today, nowStr, id)
+		writeJSON(w, http.StatusCreated, map[string]any{"schedule_id": id, "task_id": newTaskID})
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		var s ScheduleTask
+		var weekDay, monthDay, month sql.NullInt64
+		var endDate, lastRun sql.NullString
+		var created, updated string
+		err := a.db.QueryRow(`
+			SELECT id, name, period, week_day, month_day, month, start_date, end_date, last_run_date, created_at, updated_at
+			FROM schedule_tasks WHERE id = ?
+		`, id).Scan(&s.ID, &s.Name, &s.Period, &weekDay, &monthDay, &month, &s.StartDate, &endDate, &lastRun, &created, &updated)
+		if err != nil {
+			if err == sql.ErrNoRows {
+				writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+				return
+			}
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		if weekDay.Valid {
+			v := int(weekDay.Int64) + 1
+			s.WeekDay = &v
+		}
+		if monthDay.Valid {
+			v := int(monthDay.Int64)
+			s.MonthDay = &v
+		}
+		if month.Valid {
+			v := int(month.Int64)
+			s.Month = &v
+		}
+		if endDate.Valid {
+			v := endDate.String
+			s.EndDate = &v
+		}
+		if lastRun.Valid {
+			v := lastRun.String
+			s.LastRunDate = &v
+		}
+		if tags, err := a.fetchScheduleTags(s.ID); err == nil {
+			s.Tags = tags
+		}
+		s.CreatedAt, _ = time.Parse(time.RFC3339, created)
+		s.UpdatedAt, _ = time.Parse(time.RFC3339, updated)
+		writeJSON(w, http.StatusOK, s)
+	case http.MethodPatch:
+		var body struct {
+			Name      *string   `json:"name"`
+			Period    *string   `json:"period"`
+			WeekDay   *int      `json:"week_day"`
+			MonthDay  *int      `json:"month_day"`
+			Month     *int      `json:"month"`
+			StartDate *string   `json:"start_date"`
+			EndDate   *string   `json:"end_date"`
+			Tags      *[]string `json:"tags"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
+			return
+		}
+		// 读出旧值以验证新配置
+		var cur ScheduleTask
+		{
+			var weekDay, monthDay, month sql.NullInt64
+			var endDate, lastRun sql.NullString
+			var created, updated string
+			if err := a.db.QueryRow(`
+				SELECT id, name, period, week_day, month_day, month, start_date, end_date, last_run_date, created_at, updated_at
+				FROM schedule_tasks WHERE id = ?
+			`, id).Scan(&cur.ID, &cur.Name, &cur.Period, &weekDay, &monthDay, &month, &cur.StartDate, &endDate, &lastRun, &created, &updated); err != nil {
+				if err == sql.ErrNoRows {
+					writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+					return
+				}
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+				return
+			}
+			if weekDay.Valid {
+				v := int(weekDay.Int64) + 1
+				cur.WeekDay = &v
+			}
+			if monthDay.Valid {
+				v := int(monthDay.Int64)
+				cur.MonthDay = &v
+			}
+			if month.Valid {
+				v := int(month.Int64)
+				cur.Month = &v
+			}
+			if endDate.Valid {
+				v := endDate.String
+				cur.EndDate = &v
+			}
+			if lastRun.Valid {
+				v := lastRun.String
+				cur.LastRunDate = &v
+			}
+		}
+		newName := chooseStr(body.Name, cur.Name)
+		newPeriod := chooseStr(body.Period, cur.Period)
+		newWeekDay := chooseInt(body.WeekDay, cur.WeekDay)
+		newMonthDay := chooseInt(body.MonthDay, cur.MonthDay)
+		newMonth := chooseInt(body.Month, cur.Month)
+		newStart := chooseStr(body.StartDate, cur.StartDate)
+		var newEnd *string
+		if body.EndDate != nil {
+			val := strings.TrimSpace(*body.EndDate)
+			newEnd = &val
+		} else {
+			newEnd = cur.EndDate
+		}
+		if err := validateScheduleInput(newName, newPeriod, newWeekDay, newMonthDay, newMonth, newStart, newEnd); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		// 生成动态更新
+		set := []string{}
+		args := []any{}
+		if body.Name != nil {
+			set = append(set, "name = ?")
+			args = append(args, newName)
+		}
+		if body.Period != nil {
+			set = append(set, "period = ?")
+			args = append(args, strings.ToLower(newPeriod))
+		}
+		if body.WeekDay != nil {
+			if newWeekDay != nil {
+				args = append(args, sql.NullInt64{Int64: int64((*newWeekDay - 1 + 7) % 7), Valid: true})
+			} else {
+				args = append(args, sql.NullInt64{Valid: false})
+			}
+			set = append(set, "week_day = ?")
+		}
+		if body.MonthDay != nil {
+			if newMonthDay != nil {
+				args = append(args, sql.NullInt64{Int64: int64(*newMonthDay), Valid: true})
+			} else {
+				args = append(args, sql.NullInt64{Valid: false})
+			}
+			set = append(set, "month_day = ?")
+		}
+		if body.Month != nil {
+			if newMonth != nil {
+				args = append(args, sql.NullInt64{Int64: int64(*newMonth), Valid: true})
+			} else {
+				args = append(args, sql.NullInt64{Valid: false})
+			}
+			set = append(set, "month = ?")
+		}
+		if body.StartDate != nil {
+			set = append(set, "start_date = ?")
+			args = append(args, newStart)
+		}
+		if body.EndDate != nil {
+			if newEnd != nil && strings.TrimSpace(*newEnd) != "" {
+				args = append(args, sql.NullString{String: *newEnd, Valid: true})
+			} else {
+				args = append(args, sql.NullString{Valid: false})
+			}
+			set = append(set, "end_date = ?")
+		}
+		now := time.Now().Format(time.RFC3339)
+		set = append(set, "updated_at = ?")
+		args = append(args, now, id)
+		if len(set) > 0 {
+			q := `UPDATE schedule_tasks SET ` + strings.Join(set, ", ") + ` WHERE id = ?`
+			if _, err := a.db.Exec(q, args...); err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+				return
+			}
+		}
+		// 更新标签（如果提供）
+		if body.Tags != nil {
+			if err := a.replaceScheduleTags(id, *body.Tags); err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+				return
+			}
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"id": id, "updated": true})
+	case http.MethodDelete:
+		if _, err := a.db.Exec(`DELETE FROM schedule_tasks WHERE id = ?`, id); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"id": id, "deleted": true})
+	default:
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+	}
+}
+
+// fetchScheduleTags 查询定时任务的标签集合
+func (a *App) fetchScheduleTags(scheduleID int64) ([]string, error) {
+	rows, err := a.db.Query(`SELECT tag FROM schedule_task_tags WHERE schedule_id = ?`, scheduleID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var tags []string
+	for rows.Next() {
+		var tag string
+		if err := rows.Scan(&tag); err != nil {
+			return nil, err
+		}
+		tags = append(tags, tag)
+	}
+	return tags, nil
+}
+
+// replaceScheduleTags 用给定集合替换定时任务的标签（先清空再插入）
+func (a *App) replaceScheduleTags(scheduleID int64, tags []string) error {
+	if _, err := a.db.Exec(`DELETE FROM schedule_task_tags WHERE schedule_id = ?`, scheduleID); err != nil {
+		return err
+	}
+	for _, tag := range tags {
+		tag = strings.TrimSpace(tag)
+		if tag == "" {
+			continue
+		}
+		if _, err := a.db.Exec(`INSERT INTO schedule_task_tags (schedule_id, tag) VALUES (?, ?)`, scheduleID, tag); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// validateScheduleInput 校验定时任务配置
+func validateScheduleInput(name, period string, weekDay, monthDay, month *int, startDate string, endDate *string) error {
+	if strings.TrimSpace(name) == "" {
+		return errors.New("name required")
+	}
+	p := strings.ToLower(strings.TrimSpace(period))
+	switch p {
+	case "day":
+		// no extra fields
+	case "week":
+		if weekDay == nil || *weekDay < 1 || *weekDay > 7 {
+			return errors.New("week_day must be 1-7 for weekly period")
+		}
+	case "month":
+		if monthDay == nil || *monthDay < 1 || *monthDay > 31 {
+			return errors.New("month_day must be 1-31 for monthly period")
+		}
+	case "year":
+		if month == nil || *month < 1 || *month > 12 {
+			return errors.New("month must be 1-12 for yearly period")
+		}
+		if monthDay == nil || *monthDay < 1 || *monthDay > 31 {
+			return errors.New("month_day must be 1-31 for yearly period")
+		}
+	default:
+		return errors.New("invalid period")
+	}
+	if _, err := time.Parse("2006-01-02", startDate); err != nil {
+		return errors.New("start_date must be YYYY-MM-DD")
+	}
+	if endDate != nil && strings.TrimSpace(*endDate) != "" {
+		if _, err := time.Parse("2006-01-02", *endDate); err != nil {
+			return errors.New("end_date must be YYYY-MM-DD")
+		}
+		if *endDate < startDate {
+			return errors.New("end_date must be >= start_date")
+		}
+	}
+	return nil
+}
+
+// chooseStr 返回首选非空字符串指针值
+func chooseStr(p *string, cur string) string {
+	if p != nil {
+		return *p
+	}
+	return cur
+}
+
+// chooseInt 返回首选指针值或当前值
+func chooseInt(p *int, cur *int) *int {
+	if p != nil {
+		return p
+	}
+	return cur
+}
+
+// startScheduler 启动定时器循环，每分钟检查一次“今天”是否应生成普通任务
+func (a *App) startScheduler() {
+	go func() {
+		ticker := time.NewTicker(60 * time.Second)
+		defer ticker.Stop()
+		// 启动立即检查一次
+		a.runScheduleOnce()
+		for range ticker.C {
+			a.runScheduleOnce()
+		}
+	}()
+}
+
+// runScheduleOnce 执行一次定时任务检查与任务生成
+func (a *App) runScheduleOnce() {
+	today := time.Now().Format("2006-01-02")
+	// 只在 start<=today<=end 时考虑
+	rows, err := a.db.Query(`
+		SELECT id, name, period, week_day, month_day, month, start_date, end_date, last_run_date
+		FROM schedule_tasks
+		WHERE start_date <= ?
+		  AND (end_date IS NULL OR end_date >= ?)
+	`, today, today)
+	if err != nil {
+		a.logger.Printf("查询定时任务失败: %v", err)
+		return
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id int64
+		var name, period, startDate string
+		var weekDay, monthDay, month sql.NullInt64
+		var endDate, lastRun sql.NullString
+		if err := rows.Scan(&id, &name, &period, &weekDay, &monthDay, &month, &startDate, &endDate, &lastRun); err != nil {
+			a.logger.Printf("扫描定时任务失败: %v", err)
+			continue
+		}
+		if lastRun.Valid && lastRun.String == today {
+			continue
+		}
+		match := false
+		now := time.Now()
+		switch strings.ToLower(period) {
+		case "day":
+			match = true
+		case "week":
+			if weekDay.Valid {
+				// db: 0-6 Sunday=0; Go Weekday: Sunday=0
+				got := int(now.Weekday())
+				if got == int(weekDay.Int64) {
+					match = true
+				}
+			}
+		case "month":
+			if monthDay.Valid && int(now.Day()) == int(monthDay.Int64) {
+				match = true
+			}
+		case "year":
+			if month.Valid && monthDay.Valid && int(now.Month()) == int(month.Int64) && now.Day() == int(monthDay.Int64) {
+				match = true
+			}
+		default:
+			match = false
+		}
+		if !match {
+			continue
+		}
+		title := fmt.Sprintf("%s %s", name, today)
+		nowStr := time.Now().Format(time.RFC3339)
+		res, err := a.db.Exec(`
+			INSERT INTO tasks (title, description, status, archived, created_at, updated_at)
+			VALUES (?, ?, ?, 0, ?, ?)
+		`, title, "", "规划中", nowStr, nowStr)
+		if err != nil {
+			a.logger.Printf("生成任务失败(schedule id=%d): %v", id, err)
+			continue
+		}
+		newTaskID, _ := res.LastInsertId()
+		// 为新生成任务附加定时任务的标签
+		if tags, err := a.fetchScheduleTags(id); err == nil {
+			if err := a.replaceTaskTags(newTaskID, tags); err != nil {
+				a.logger.Printf("附加标签失败(task id=%d, schedule id=%d): %v", newTaskID, id, err)
+			}
+		}
+		if _, err := a.db.Exec(`UPDATE schedule_tasks SET last_run_date = ?, updated_at = ? WHERE id = ?`, today, nowStr, id); err != nil {
+			a.logger.Printf("更新定时任务 last_run_date 失败(id=%d): %v", id, err)
+		}
+	}
+}
+
 // parseInt64 将字符串解析为 int64
 func parseInt64(s string) (int64, error) {
 	var n int64
@@ -585,6 +1201,9 @@ func getEnv(key, def string) string {
 func main() {
 	app := NewApp()
 	addr := ":" + getEnv("PORT", "8080")
+
+	// 启动定时任务调度器
+	app.startScheduler()
 
 	srv := &http.Server{
 		Addr:         addr,

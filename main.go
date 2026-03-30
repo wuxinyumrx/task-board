@@ -1153,6 +1153,24 @@ func (a *App) runScheduleOnce() {
 			a.logger.Printf("更新定时任务 last_run_date 失败(id=%d): %v", id, err)
 		}
 	}
+	// 自动归档已完成且未归档且超过10天的任务
+	a.autoArchiveCompleted()
+}
+
+// autoArchiveCompleted 自动归档超过10天且状态为“已完成”的未归档任务
+func (a *App) autoArchiveCompleted() {
+	cutoff := time.Now().AddDate(0, 0, -10).Format(time.RFC3339)
+	nowStr := time.Now().Format(time.RFC3339)
+	_, err := a.db.Exec(`
+		UPDATE tasks
+		SET archived = 1, updated_at = ?
+		WHERE archived = 0
+		  AND status = ?
+		  AND updated_at < ?
+	`, nowStr, "已完成", cutoff)
+	if err != nil {
+		a.logger.Printf("自动归档任务失败: %v", err)
+	}
 }
 
 // parseInt64 将字符串解析为 int64

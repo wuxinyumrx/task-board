@@ -251,6 +251,7 @@ func (a *App) handleTasksList(w http.ResponseWriter, r *http.Request) {
 		}
 		defer rows.Close()
 		var out []Task
+		var ids []int64
 		for rows.Next() {
 			var t Task
 			var created, updated string
@@ -260,11 +261,18 @@ func (a *App) handleTasksList(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			t.Archived = archInt != 0
-			tags, _ := a.fetchTags(t.ID)
-			t.Tags = tags
+			ids = append(ids, t.ID)
 			t.CreatedAt, _ = time.Parse(time.RFC3339, created)
 			t.UpdatedAt, _ = time.Parse(time.RFC3339, updated)
 			out = append(out, t)
+		}
+		if len(ids) > 0 {
+			tagMap, _ := a.fetchTagsForIDs(ids)
+			for i := range out {
+				if v, ok := tagMap[out[i].ID]; ok {
+					out[i].Tags = v
+				}
+			}
 		}
 		hasMore := offset+int64(len(out)) < total
 		writeJSON(w, http.StatusOK, map[string]any{
@@ -288,6 +296,7 @@ func (a *App) handleTasksList(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rows.Close()
 	var out []Task
+	var ids []int64
 	for rows.Next() {
 		var t Task
 		var created, updated string
@@ -297,11 +306,18 @@ func (a *App) handleTasksList(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		t.Archived = archInt != 0
-		tags, _ := a.fetchTags(t.ID)
-		t.Tags = tags
+		ids = append(ids, t.ID)
 		t.CreatedAt, _ = time.Parse(time.RFC3339, created)
 		t.UpdatedAt, _ = time.Parse(time.RFC3339, updated)
 		out = append(out, t)
+	}
+	if len(ids) > 0 {
+		tagMap, _ := a.fetchTagsForIDs(ids)
+		for i := range out {
+			if v, ok := tagMap[out[i].ID]; ok {
+				out[i].Tags = v
+			}
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": out})
 }
@@ -322,6 +338,35 @@ func (a *App) fetchTags(taskID int64) ([]string, error) {
 		tags = append(tags, tag)
 	}
 	return tags, nil
+}
+
+// fetchTagsForIDs 批量查询任务标签，返回 taskID -> []tag 映射
+func (a *App) fetchTagsForIDs(ids []int64) (map[int64][]string, error) {
+	if len(ids) == 0 {
+		return map[int64][]string{}, nil
+	}
+	placeholders := make([]string, len(ids))
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	q := `SELECT task_id, tag FROM task_tags WHERE task_id IN (` + strings.Join(placeholders, ",") + `)`
+	rows, err := a.db.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make(map[int64][]string, len(ids))
+	for rows.Next() {
+		var tid int64
+		var tag string
+		if err := rows.Scan(&tid, &tag); err != nil {
+			return nil, err
+		}
+		out[tid] = append(out[tid], tag)
+	}
+	return out, nil
 }
 
 // handleTags 返回系统中已有的标签列表，支持 q 模糊查询
@@ -694,8 +739,8 @@ func (a *App) handleSchedules(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
 		}
-		// 立即检查一次以便当日匹配时即时生成
-		a.runScheduleOnce()
+		// 立即尝试为该定时任务生成当日任务（命中则生成一次）
+		_, _, _ = a.generateScheduleNow(newID)
 		writeJSON(w, http.StatusCreated, map[string]any{"id": newID})
 	default:
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
@@ -724,63 +769,16 @@ func (a *App) handleScheduleItem(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 			return
 		}
-		today := time.Now().Format("2006-01-02")
-		var name, period, startDate string
-		var weekDay, monthDay, month sql.NullInt64
-		var endDate, lastRun sql.NullString
-		err := a.db.QueryRow(`SELECT name, period, week_day, month_day, month, start_date, end_date, last_run_date FROM schedule_tasks WHERE id = ?`, id).
-			Scan(&name, &period, &weekDay, &monthDay, &month, &startDate, &endDate, &lastRun)
+		gen, taskID, err := a.generateScheduleNow(id)
 		if err != nil {
-			if err == sql.ErrNoRows {
-				writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
-				return
-			}
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
 		}
-		if !(startDate <= today && (!endDate.Valid || endDate.String >= today)) {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "out of date range"})
-			return
-		}
-		if lastRun.Valid && lastRun.String == today {
+		if !gen {
 			writeJSON(w, http.StatusOK, map[string]any{"id": id, "generated": false})
 			return
 		}
-		ok := false
-		now := time.Now()
-		switch strings.ToLower(period) {
-		case "day":
-			ok = true
-		case "week":
-			if weekDay.Valid && int(now.Weekday()) == int(weekDay.Int64) {
-				ok = true
-			}
-		case "month":
-			if monthDay.Valid && now.Day() == int(monthDay.Int64) {
-				ok = true
-			}
-		case "year":
-			if month.Valid && monthDay.Valid && int(now.Month()) == int(month.Int64) && now.Day() == int(monthDay.Int64) {
-				ok = true
-			}
-		}
-		if !ok {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "not match today"})
-			return
-		}
-		title := fmt.Sprintf("%s %s", name, today)
-		nowStr := time.Now().Format(time.RFC3339)
-		res, err := a.db.Exec(`INSERT INTO tasks (title, description, status, archived, created_at, updated_at) VALUES (?, ?, ?, 0, ?, ?)`, title, "", "规划中", nowStr, nowStr)
-		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-			return
-		}
-		newTaskID, _ := res.LastInsertId()
-		if tags, err := a.fetchScheduleTags(id); err == nil {
-			_ = a.replaceTaskTags(newTaskID, tags)
-		}
-		_, _ = a.db.Exec(`UPDATE schedule_tasks SET last_run_date = ?, updated_at = ? WHERE id = ?`, today, nowStr, id)
-		writeJSON(w, http.StatusCreated, map[string]any{"schedule_id": id, "task_id": newTaskID})
+		writeJSON(w, http.StatusCreated, map[string]any{"schedule_id": id, "task_id": taskID})
 		return
 	}
 	switch r.Method {
@@ -1080,7 +1078,7 @@ func (a *App) startScheduler() {
 
 // runScheduleOnce 执行一次定时任务检查与任务生成
 func (a *App) runScheduleOnce() {
-	today := time.Now().Format("2006-01-02")
+	today := todayStr()
 	// 只在 start<=today<=end 时考虑
 	rows, err := a.db.Query(`
 		SELECT id, name, period, week_day, month_day, month, start_date, end_date, last_run_date
@@ -1106,7 +1104,7 @@ func (a *App) runScheduleOnce() {
 			continue
 		}
 		match := false
-		now := time.Now()
+		now := nowInTZ()
 		switch strings.ToLower(period) {
 		case "day":
 			match = true
@@ -1133,7 +1131,7 @@ func (a *App) runScheduleOnce() {
 			continue
 		}
 		title := fmt.Sprintf("%s %s", name, today)
-		nowStr := time.Now().Format(time.RFC3339)
+		nowStr := nowInTZ().Format(time.RFC3339)
 		res, err := a.db.Exec(`
 			INSERT INTO tasks (title, description, status, archived, created_at, updated_at)
 			VALUES (?, ?, ?, 0, ?, ?)
@@ -1159,8 +1157,8 @@ func (a *App) runScheduleOnce() {
 
 // autoArchiveCompleted 自动归档超过10天且状态为“已完成”的未归档任务
 func (a *App) autoArchiveCompleted() {
-	cutoff := time.Now().AddDate(0, 0, -10).Format(time.RFC3339)
-	nowStr := time.Now().Format(time.RFC3339)
+	cutoff := nowInTZ().AddDate(0, 0, -10).Format(time.RFC3339)
+	nowStr := nowInTZ().Format(time.RFC3339)
 	_, err := a.db.Exec(`
 		UPDATE tasks
 		SET archived = 1, updated_at = ?
@@ -1171,6 +1169,81 @@ func (a *App) autoArchiveCompleted() {
 	if err != nil {
 		a.logger.Printf("自动归档任务失败: %v", err)
 	}
+}
+
+// nowInTZ 返回考虑 TZ 环境变量的当前时间；若 TZ 不可用则返回本地时间
+func nowInTZ() time.Time {
+	tz := getEnv("TZ", "")
+	if tz == "Asia/Shanghai" {
+		loc := time.FixedZone("CST", 8*3600)
+		return time.Now().In(loc)
+	}
+	if tz != "" {
+		if loc, err := time.LoadLocation(tz); err == nil {
+			return time.Now().In(loc)
+		}
+	}
+	return time.Now()
+}
+
+// todayStr 返回当前日期字符串（YYYY-MM-DD），考虑 TZ
+func todayStr() string {
+	return nowInTZ().Format("2006-01-02")
+}
+
+// generateScheduleNow 尝试为指定定时任务在“今天”生成任务，返回是否生成、生成的任务ID与错误
+func (a *App) generateScheduleNow(id int64) (bool, int64, error) {
+	today := todayStr()
+	var name, period, startDate string
+	var weekDay, monthDay, month sql.NullInt64
+	var endDate, lastRun sql.NullString
+	err := a.db.QueryRow(`SELECT name, period, week_day, month_day, month, start_date, end_date, last_run_date FROM schedule_tasks WHERE id = ?`, id).
+		Scan(&name, &period, &weekDay, &monthDay, &month, &startDate, &endDate, &lastRun)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return false, 0, fmt.Errorf("not found")
+		}
+		return false, 0, err
+	}
+	if !(startDate <= today && (!endDate.Valid || endDate.String >= today)) {
+		return false, 0, fmt.Errorf("out of date range")
+	}
+	if lastRun.Valid && lastRun.String == today {
+		return false, 0, nil
+	}
+	ok := false
+	now := nowInTZ()
+	switch strings.ToLower(period) {
+	case "day":
+		ok = true
+	case "week":
+		if weekDay.Valid && int(now.Weekday()) == int(weekDay.Int64) {
+			ok = true
+		}
+	case "month":
+		if monthDay.Valid && now.Day() == int(monthDay.Int64) {
+			ok = true
+		}
+	case "year":
+		if month.Valid && monthDay.Valid && int(now.Month()) == int(month.Int64) && now.Day() == int(monthDay.Int64) {
+			ok = true
+		}
+	}
+	if !ok {
+		return false, 0, fmt.Errorf("not match today")
+	}
+	title := fmt.Sprintf("%s %s", name, today)
+	nowStr := nowInTZ().Format(time.RFC3339)
+	res, err := a.db.Exec(`INSERT INTO tasks (title, description, status, archived, created_at, updated_at) VALUES (?, ?, ?, 0, ?, ?)`, title, "", "规划中", nowStr, nowStr)
+	if err != nil {
+		return false, 0, err
+	}
+	newTaskID, _ := res.LastInsertId()
+	if tags, err := a.fetchScheduleTags(id); err == nil {
+		_ = a.replaceTaskTags(newTaskID, tags)
+	}
+	_, _ = a.db.Exec(`UPDATE schedule_tasks SET last_run_date = ?, updated_at = ? WHERE id = ?`, today, nowStr, id)
+	return true, newTaskID, nil
 }
 
 // parseInt64 将字符串解析为 int64

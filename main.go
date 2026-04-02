@@ -143,6 +143,10 @@ func (a *App) initDB() error {
 	if _, err := a.db.Exec(schema); err != nil {
 		return err
 	}
+	// 轻量迁移：确保旧库具备新增列与表
+	if err := a.migrateScheduleSchema(); err != nil {
+		a.logger.Printf("迁移 schedule 表失败: %v", err)
+	}
 	return nil
 }
 
@@ -151,6 +155,32 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+// migrateScheduleSchema 确保 schedule_tasks 存在 last_run_date 列等
+func (a *App) migrateScheduleSchema() error {
+	cols := map[string]bool{}
+	rows, err := a.db.Query(`PRAGMA table_info(schedule_tasks)`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name, ctype string
+		var notnull, pk int
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			return err
+		}
+		cols[name] = true
+	}
+	if !cols["last_run_date"] {
+		if _, err := a.db.Exec(`ALTER TABLE schedule_tasks ADD COLUMN last_run_date TEXT`); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // 已移除与 notes 相关的接口与数据结构

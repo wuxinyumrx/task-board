@@ -792,29 +792,51 @@
                   cur.updated_at = it.updated_at;
                 }
               });
-              // 依据服务器顺序重建数组（已有项复用引用，新增项插入）
+              // 保留服务端的新增项与仍然存在的项，同时过滤掉未被返回（可能被删除或归档）的旧项
               const result = nextItems.map(it => currentById.get(it.id) || it);
               tasks.value = result;
             };
             // 初始化任务列表与拖拽
             const loadTasks = async () => {
               try {
-                const data = await fetch(`/api/tasks?_=${Date.now()}`, { headers: { "Accept": "application/json" } }).then(r => r.json());
+                const data = await fetch(`/api/tasks?_=${Date.now()}`, { headers: { "Accept": "application/json" } }).then(r => {
+                  if (!r.ok) throw new Error(`HTTP error! status: ${r.status}`);
+                  return r.json();
+                });
                 const items = data.items || [];
-                mergeTasks(items);
+                // 如果返回的数据不合法（例如网关拦截、非JSON），避免将其覆盖为 []
+                if (Array.isArray(items)) {
+                  mergeTasks(items);
+                } else {
+                  throw new Error("Invalid payload format");
+                }
               } catch (err) {
-                console.error(err);
+                console.error("加载任务失败:", err);
+                throw err; // 将错误向上抛出以便定时器感知
               }
             };
             // 桌面端定时刷新：每 2 秒刷新一次（仅增量更新）
             let refreshTimer = null;
             let refreshBusy = false;
+            let consecutiveFailures = 0;
             const startDesktopRefresh = () => {
               if (refreshTimer) return;
               refreshTimer = setInterval(async () => {
                 if (refreshBusy) return;
+                // 如果页面不可见，则不刷新（节省资源，防止失焦期间堆积错误）
+                if (document.hidden) return;
                 refreshBusy = true;
-                try { await loadTasks(); } finally { refreshBusy = false; }
+                try { 
+                  await loadTasks(); 
+                  consecutiveFailures = 0;
+                } catch (err) {
+                  consecutiveFailures++;
+                  if (consecutiveFailures > 3) {
+                    console.warn("连续刷新失败超过 3 次，可能网络断开");
+                  }
+                } finally { 
+                  refreshBusy = false; 
+                }
               }, 2000);
             };
             const stopDesktopRefresh = () => {

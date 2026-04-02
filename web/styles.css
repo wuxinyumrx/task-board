@@ -894,19 +894,24 @@ pre {
   .container {
     position: fixed;
     inset: 0;
-    padding: calc(12px + env(safe-area-inset-top)) 16px calc(12px + env(safe-area-inset-bottom)) 16px;
+    padding: calc(6px + env(safe-area-inset-top)) 12px calc(8px + env(safe-area-inset-bottom)) 12px;
     height: 100svh;
     overflow: hidden;
   }
-  .tabs { display: none; }
+  .tabs {
+    display: flex;
+    margin-top: 0;
+    margin-bottom: 8px;
+  }
   .mobile-only { display: none; }
   .board {
     display: flex;
     flex-direction: column;
     gap: 12px;
-    padding-bottom: 52px;
     height: 100%;
     overflow: hidden;
+    padding-bottom: 24px;
+    padding-top: 2px;
   }
   .column {
     display: flex;

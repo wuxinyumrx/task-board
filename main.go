@@ -1120,38 +1120,53 @@ func (a *App) runScheduleOnce() {
 		a.logger.Printf("查询定时任务失败: %v", err)
 		return
 	}
-	defer rows.Close()
+
+	type scheduleRow struct {
+		id        int64
+		name      string
+		period    string
+		startDate string
+		weekDay   sql.NullInt64
+		monthDay  sql.NullInt64
+		month     sql.NullInt64
+		endDate   sql.NullString
+		lastRun   sql.NullString
+	}
+	var schedules []scheduleRow
+
 	for rows.Next() {
-		var id int64
-		var name, period, startDate string
-		var weekDay, monthDay, month sql.NullInt64
-		var endDate, lastRun sql.NullString
-		if err := rows.Scan(&id, &name, &period, &weekDay, &monthDay, &month, &startDate, &endDate, &lastRun); err != nil {
+		var s scheduleRow
+		if err := rows.Scan(&s.id, &s.name, &s.period, &s.weekDay, &s.monthDay, &s.month, &s.startDate, &s.endDate, &s.lastRun); err != nil {
 			a.logger.Printf("扫描定时任务失败: %v", err)
 			continue
 		}
-		if lastRun.Valid && lastRun.String == today {
+		schedules = append(schedules, s)
+	}
+	rows.Close()
+
+	for _, s := range schedules {
+		if s.lastRun.Valid && s.lastRun.String == today {
 			continue
 		}
 		match := false
 		now := nowInTZ()
-		switch strings.ToLower(period) {
+		switch strings.ToLower(s.period) {
 		case "day":
 			match = true
 		case "week":
-			if weekDay.Valid {
+			if s.weekDay.Valid {
 				// db: 0-6 Sunday=0; Go Weekday: Sunday=0
 				got := int(now.Weekday())
-				if got == int(weekDay.Int64) {
+				if got == int(s.weekDay.Int64) {
 					match = true
 				}
 			}
 		case "month":
-			if monthDay.Valid && int(now.Day()) == int(monthDay.Int64) {
+			if s.monthDay.Valid && int(now.Day()) == int(s.monthDay.Int64) {
 				match = true
 			}
 		case "year":
-			if month.Valid && monthDay.Valid && int(now.Month()) == int(month.Int64) && now.Day() == int(monthDay.Int64) {
+			if s.month.Valid && s.monthDay.Valid && int(now.Month()) == int(s.month.Int64) && now.Day() == int(s.monthDay.Int64) {
 				match = true
 			}
 		default:
@@ -1160,25 +1175,25 @@ func (a *App) runScheduleOnce() {
 		if !match {
 			continue
 		}
-		title := fmt.Sprintf("%s %s", name, today)
+		title := fmt.Sprintf("%s %s", s.name, today)
 		nowStr := nowInTZ().Format(time.RFC3339)
 		res, err := a.db.Exec(`
 			INSERT INTO tasks (title, description, status, archived, created_at, updated_at)
 			VALUES (?, ?, ?, 0, ?, ?)
 		`, title, "", "规划中", nowStr, nowStr)
 		if err != nil {
-			a.logger.Printf("生成任务失败(schedule id=%d): %v", id, err)
+			a.logger.Printf("生成任务失败(schedule id=%d): %v", s.id, err)
 			continue
 		}
 		newTaskID, _ := res.LastInsertId()
 		// 为新生成任务附加定时任务的标签
-		if tags, err := a.fetchScheduleTags(id); err == nil {
+		if tags, err := a.fetchScheduleTags(s.id); err == nil {
 			if err := a.replaceTaskTags(newTaskID, tags); err != nil {
-				a.logger.Printf("附加标签失败(task id=%d, schedule id=%d): %v", newTaskID, id, err)
+				a.logger.Printf("附加标签失败(task id=%d, schedule id=%d): %v", newTaskID, s.id, err)
 			}
 		}
-		if _, err := a.db.Exec(`UPDATE schedule_tasks SET last_run_date = ?, updated_at = ? WHERE id = ?`, today, nowStr, id); err != nil {
-			a.logger.Printf("更新定时任务 last_run_date 失败(id=%d): %v", id, err)
+		if _, err := a.db.Exec(`UPDATE schedule_tasks SET last_run_date = ?, updated_at = ? WHERE id = ?`, today, nowStr, s.id); err != nil {
+			a.logger.Printf("更新定时任务 last_run_date 失败(id=%d): %v", s.id, err)
 		}
 	}
 	// 自动归档已完成且未归档且超过10天的任务

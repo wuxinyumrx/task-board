@@ -82,13 +82,17 @@
           <div class="modal-content theme-modal">
             <h3 style="margin:0 0 12px;">切换主题</h3>
             <div class="themes-grid">
-              <button class="theme-card" v-for="t in themes" :key="t.key" @click="applyTheme(t.key)">
-                <div class="swatch" :style="{ background: t.preview.bg }"></div>
-                <div class="swatch-row">
-                  <span class="swatch" :style="{ background: t.preview.plan }"></span>
-                  <span class="swatch" :style="{ background: t.preview.do }"></span>
-                  <span class="swatch" :style="{ background: t.preview.hold }"></span>
-                  <span class="swatch" :style="{ background: t.preview.done }"></span>
+              <button class="theme-card" v-for="t in themes" :key="t.key" @click="applyTheme(t.key)" :aria-label="t.name">
+                <div class="theme-preview" :style="{ background: t.preview.bg }">
+                  <div class="mini-column">
+                    <div class="mini-header"></div>
+                    <div class="mini-cards">
+                      <span class="mini-card" :style="{ background: t.preview.plan }"></span>
+                      <span class="mini-card" :style="{ background: t.preview.do }"></span>
+                      <span class="mini-card" :style="{ background: t.preview.hold }"></span>
+                      <span class="mini-card" :style="{ background: t.preview.done }"></span>
+                    </div>
+                  </div>
                 </div>
                 <div class="theme-name">{{ t.name }}</div>
               </button>
@@ -528,10 +532,10 @@
             const fabOpen = ref(false);
             const showTheme = ref(false);
             const themes = [
-              { key: "night", name: "星夜", preview: { bg: "linear-gradient(180deg,#080c17 0%,#0b0f1a 100%)", plan: "#1a2b4f", do: "#153a3a", hold: "#3a2a15", done: "#16321c" } },
-              { key: "dawn", name: "清晨", preview: { bg: "linear-gradient(180deg,#eef5ff 0%,#dde8f9 100%)", plan: "#dbe7ff", do: "#dff7f1", hold: "#fff1db", done: "#e6f7e9" } },
-              { key: "sunset", name: "暮霞", preview: { bg: "linear-gradient(180deg,#1b0f14 0%,#2a1a20 100%)", plan: "#2a2233", do: "#1f2a28", hold: "#38241a", done: "#1f2a1f" } },
-              { key: "forest", name: "森林", preview: { bg: "linear-gradient(180deg,#0b1510 0%,#0e1a12 100%)", plan: "#12222d", do: "#0f2621", hold: "#2a1e12", done: "#123019" } },
+              { key: "night", name: "星夜", preview: { bg: "linear-gradient(180deg,#05070e 0%,#080c16 100%)", plan: "#18233b", do: "#152929", hold: "#2b1e15", done: "#152b1a" } },
+              { key: "dawn", name: "清晨", preview: { bg: "linear-gradient(180deg,#eef5ff 0%,#dde8f9 100%)", plan: "#e6efff", do: "#e8fbf6", hold: "#fff3e0", done: "#e9f8ee" } },
+              { key: "sunset", name: "暮霞", preview: { bg: "linear-gradient(180deg,#10070a 0%,#170b10 100%)", plan: "#281a2e", do: "#1a2522", hold: "#321d14", done: "#1b261c" } },
+              { key: "forest", name: "森林", preview: { bg: "linear-gradient(180deg,#060c08 0%,#08100b 100%)", plan: "#122435", do: "#112d23", hold: "#2e1d12", done: "#13331b" } },
             ];
             const toggleFab = () => { fabOpen.value = !fabOpen.value; };
             const openTheme = () => { fabOpen.value = false; showTheme.value = true; };
